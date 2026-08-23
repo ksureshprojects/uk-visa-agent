@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+visa_agent.db
+.pytest_cache/
+.env

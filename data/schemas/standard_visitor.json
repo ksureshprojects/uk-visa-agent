@@ -1,0 +1,107 @@
+{
+  "visa_type": "Standard Visitor",
+  "requirements": [
+    {
+      "name": "full_name",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the applicant's full legal name, exactly as it appears in their passport?"
+    },
+    {
+      "name": "date_of_birth",
+      "kind": "field",
+      "validator": "iso_date_in_past",
+      "prompt": "What is their date of birth? Please give it as YYYY-MM-DD."
+    },
+    {
+      "name": "nationality",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is their nationality (as shown on their passport)?"
+    },
+    {
+      "name": "passport_number",
+      "kind": "field",
+      "validator": "passport_number",
+      "prompt": "What is their passport number?"
+    },
+    {
+      "name": "passport_expiry_date",
+      "kind": "field",
+      "validator": "iso_date_in_future",
+      "prompt": "When does that passport expire? Please give it as YYYY-MM-DD."
+    },
+    {
+      "name": "purpose_of_visit",
+      "kind": "field",
+      "validator": "enum_value",
+      "validator_args": {
+        "options": ["tourism", "business", "family_friends", "short_study", "medical_treatment", "permitted_paid_engagement"]
+      },
+      "prompt": "What is the main purpose of the visit? (tourism, business, visiting family/friends, short study under 6 months, private medical treatment, or a permitted paid engagement)"
+    },
+    {
+      "name": "intended_arrival_date",
+      "kind": "field",
+      "validator": "iso_date_in_future",
+      "prompt": "What date do they plan to arrive in the UK? Please give it as YYYY-MM-DD."
+    },
+    {
+      "name": "intended_departure_date",
+      "kind": "field",
+      "validator": "departure_within_6_months_of_arrival",
+      "validator_args": {"arrival_field": "intended_arrival_date"},
+      "prompt": "What date do they plan to leave the UK? Please give it as YYYY-MM-DD. (Standard Visitor stays cannot normally exceed 6 months.)"
+    },
+    {
+      "name": "accommodation_details",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "Where will they be staying during the visit (hotel name/address, or host's address)?"
+    },
+    {
+      "name": "funds_declared_gbp",
+      "kind": "field",
+      "validator": "positive_number",
+      "prompt": "Roughly how much money (in GBP) will be available to cover the visit — living costs, accommodation, and the return/onward journey?"
+    },
+    {
+      "name": "ties_to_home_country",
+      "kind": "field",
+      "validator": "min_length_20",
+      "prompt": "What ties do they have to their home country that show they intend to leave the UK at the end of the visit (e.g. job, property, family, studies)?"
+    },
+    {
+      "name": "passport_bio_page",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have a clear copy of the passport bio-data page ready? Please confirm."
+    },
+    {
+      "name": "bank_statements",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have recent personal bank statements ready, showing sufficient funds and normal account activity? Please confirm."
+    },
+    {
+      "name": "proof_of_accommodation",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have proof of accommodation ready (hotel booking confirmation or a letter from the host)? Please confirm."
+    },
+    {
+      "name": "invitation_letter",
+      "kind": "document",
+      "validator": "non_empty",
+      "condition": {"field": "purpose_of_visit", "op": "in", "value": ["business", "family_friends"]},
+      "prompt": "Since this is a business/family visit, do you have an invitation letter from the UK host or company confirming the purpose and dates? Please confirm."
+    },
+    {
+      "name": "employer_letter",
+      "kind": "document",
+      "validator": "non_empty",
+      "condition": {"field": "purpose_of_visit", "op": "eq", "value": "business"},
+      "prompt": "For a business visit, do you have a letter from the applicant's employer confirming their role, salary, and approved leave for this trip? Please confirm."
+    }
+  ]
+}

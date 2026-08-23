@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UK Visa Agent — Chat Demo</title>
+<style>
+  :root {
+    --bg: #f0f2f5;
+    --panel: #ffffff;
+    --accent: #128c7e;
+    --accent-dark: #075e54;
+    --user-bubble: #d9fdd3;
+    --agent-bubble: #ffffff;
+    --system-bubble: #fff3cd;
+    --text: #111b21;
+    --muted: #667781;
+    --border: #e9edef;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .app {
+    width: 100%;
+    max-width: 480px;
+    height: 100vh;
+    max-height: 860px;
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 0 24px rgba(0,0,0,0.12);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  header {
+    background: var(--accent-dark);
+    color: white;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header .avatar {
+    width: 36px; height: 36px; border-radius: 50%;
+    background: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600;
+  }
+  header .title { font-weight: 600; font-size: 15px; }
+  header .status {
+    font-size: 12px;
+    opacity: 0.85;
+    text-transform: capitalize;
+  }
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background:
+      repeating-linear-gradient(45deg, rgba(0,0,0,0.015) 0 2px, transparent 2px 40px);
+  }
+  .bubble {
+    max-width: 78%;
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 14.5px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    box-shadow: 0 1px 0.5px rgba(0,0,0,0.08);
+  }
+  .bubble.user { align-self: flex-end; background: var(--user-bubble); border-bottom-right-radius: 2px; }
+  .bubble.agent { align-self: flex-start; background: var(--agent-bubble); border-bottom-left-radius: 2px; }
+  .bubble.system {
+    align-self: center;
+    background: var(--system-bubble);
+    font-size: 12.5px;
+    color: #7a5c00;
+    text-align: center;
+    max-width: 90%;
+  }
+  .package {
+    align-self: flex-start;
+    max-width: 92%;
+    background: #eef7f5;
+    border: 1px solid #cfe8e3;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 12.5px;
+  }
+  .package h4 { margin: 0 0 6px; font-size: 13px; color: var(--accent-dark); }
+  .package pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+  form {
+    display: flex;
+    gap: 8px;
+    padding: 10px;
+    border-top: 1px solid var(--border);
+    background: #f8f9fa;
+  }
+  input[type=text] {
+    flex: 1;
+    border: none;
+    border-radius: 20px;
+    padding: 10px 16px;
+    font-size: 14.5px;
+    background: white;
+    outline: none;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 40px; height: 40px;
+    cursor: pointer;
+    font-size: 16px;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .hint {
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    padding: 6px 12px 0;
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="avatar">🛂</div>
+      <div>
+        <div class="title">UK Visa Case Assistant</div>
+        <div class="status" id="status">connecting…</div>
+      </div>
+    </header>
+    <div class="messages" id="messages"></div>
+    <div class="hint">Demo scope: Standard Visitor Visa only. Not legal advice — produces a draft for human review.</div>
+    <form id="form">
+      <input id="input" type="text" placeholder="Type a message…" autocomplete="off" />
+      <button type="submit">➤</button>
+    </form>
+  </div>
+
+<script>
+const messagesEl = document.getElementById('messages');
+const statusEl = document.getElementById('status');
+const form = document.getElementById('form');
+const input = document.getElementById('input');
+
+let conversationId = null;
+
+function addBubble(role, text) {
+  const div = document.createElement('div');
+  div.className = 'bubble ' + role;
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function addPackage(pkg) {
+  const div = document.createElement('div');
+  div.className = 'package';
+  div.innerHTML = '<h4>Draft application package</h4><pre></pre>';
+  div.querySelector('pre').textContent = JSON.stringify(pkg, null, 2);
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function setStatus(status) {
+  statusEl.textContent = status.replaceAll('_', ' ');
+}
+
+async function start() {
+  const externalUserId = 'demo-' + Math.random().toString(36).slice(2, 10);
+  const res = await fetch('/conversations', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({external_user_id: externalUserId}),
+  });
+  const data = await res.json();
+  conversationId = data.conversation_id;
+  setStatus('advisory');
+  addBubble('agent', "Hi! I'm here to help prepare a UK Standard Visitor Visa case. What brings you to apply — tourism, business, visiting family, or something else?");
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text || !conversationId) return;
+  input.value = '';
+  addBubble('user', text);
+
+  const res = await fetch(`/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text}),
+  });
+  if (!res.ok) {
+    addBubble('system', 'Something went wrong talking to the agent.');
+    return;
+  }
+  const data = await res.json();
+  setStatus(data.status);
+  addBubble(data.escalated ? 'system' : 'agent', data.reply_to_user);
+  if (data.package) addPackage(data.package);
+});
+
+start();
+</script>
+</body>
+</html>
