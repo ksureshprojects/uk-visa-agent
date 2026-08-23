@@ -4,3 +4,4 @@ __pycache__/
 visa_agent.db
 .pytest_cache/
 .env
+.bin/
