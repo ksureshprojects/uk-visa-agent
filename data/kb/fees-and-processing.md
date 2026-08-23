@@ -7,19 +7,32 @@ retrieved_date: 2026-08-23
 
 # Standard Visitor Visa — Fees and Faster-Decision Options
 
-## Standard fee
-- **£135** for a Standard Visitor visa valid for **up to 6 months**.
+All figures below were confirmed directly against live gov.uk pages during this KB refresh (`/standard-visitor`, `/standard-visitor/apply-standard-visitor-visa`, `/standard-visitor/extend-your-stay`, and `/faster-decision-visa-settlement`), resolving the earlier gap where these figures had only been sourced from search-result summaries.
 
-## Long-term visa fees
-- Long-term Standard Visitor visas (2, 5, or 10 years validity) have their own, higher fees. The exact current figures for the 2/5/10-year options could not be confirmed with high confidence in this research pass (see gap note below) and should be re-verified directly against gov.uk before being quoted to a user as precise numbers.
+## Application fees by visa type/validity
 
-## Extending a stay
-- It costs **£1,172 each time** a visitor applies to extend their stay from within the UK (permitted only in limited circumstances, e.g. ongoing private medical treatment) — this is a separate, much higher fee than the original application fee.
+| Visa type | Fee | Maximum stay / validity |
+|---|---|---|
+| Standard Visitor (base, 6 months) | **£135** | 6 months |
+| Visitor in Transit | **£74.50** | up to 48 hours, transit only |
+| Standard Visitor — medical reasons | **£234** | up to 11 months |
+| Standard Visitor — academic | **£234** | up to 12 months |
+| Standard Visitor, long-term — 2 years | **£506** | 6 months per individual visit |
+| Standard Visitor, long-term — 5 years | **£903** | 6 months per individual visit |
+| Standard Visitor, long-term — 10 years | **£1,128** | 6 months per individual visit |
 
-## Faster decisions (priority services)
-Available in most (not all) countries, at extra cost on top of the standard application fee:
-- **Priority service**: **+£500**, decision usually within **5 working days**.
-- **Super priority service**: **+£1,000**, decision usually by the **end of the next working day**.
+The medical-reasons and academic figures are distinct Standard Visitor sub-categories with their own longer maximum single-stay durations, not the base 6-month visa. Note: these figures were retrieved live on 2026-08-23; the fee table itself was last confirmed by gov.uk as effective from **8 April 2026** (per the "Home Office immigration and nationality fees" publication), so these should still be treated as subject to periodic revision — re-check before quoting to a user with financial consequence, especially if this KB is used well after the retrieval date above.
 
-## Gap / uncertainty flagged — fee currency
-UK Home Office visa fees are updated periodically (recent fee-table revisions were found dated 9 April 2025, 1 July 2025, 21 October 2025, and 8 April 2026). The £135 figure was returned consistently across searches referencing the "8 April 2026" fee table, which is the most recent one relative to today's date (2026-08-23), but this was **not** confirmed by directly reading the fee table itself (gov.uk direct fetches were blocked in this environment) — it is a search-engine-summarised figure that appears unchanged since April 2025. Before this figure is surfaced to an end user with financial consequence, it should be re-verified directly against `gov.uk/government/publications/visa-regulations-revised-table` (the live, current fee table) rather than relied on solely from this file.
+## Extending a stay from inside the UK
+
+- It costs **£1,172** per application to extend a Standard Visitor stay from within the UK (permitted only in limited circumstances — see `application-process.md`).
+- An optional **super priority service** for the extension costs an additional **£1,000**, giving a decision by the next working day (or within 2 days if the appointment falls on a weekend). Standard extension decisions typically take **8 weeks**. Biometric data collection for the extension carries no extra charge.
+
+## Faster decisions on an initial application (priority services)
+
+Confirmed directly from gov.uk's dedicated faster-decision page:
+
+- **Priority service**: "You'll need to pay **£500** in addition to the application fee," with a decision "usually within **5 working days**."
+- **Super priority service**: "You'll need to pay **£1,000** in addition to the application fee," with a decision "by the end of the **next working day**."
+
+Availability of these faster-decision services varies by visa type and by country/visa application centre — gov.uk's own guidance notes eligibility differs between applications made from outside vs inside the UK, so country-specific availability should be checked at the time of application rather than assumed.
