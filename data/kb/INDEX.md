@@ -11,13 +11,25 @@ RAG-ready knowledge base of official UK government guidance on the Standard Visi
 | `prohibited-activities.md` | `visitor-prohibited-activities-01` | What a Standard Visitor must not do: work (with the narrow PPE exception), access public funds, study >6 months, marry/register civil partnership, de facto residence. |
 | `financial-requirement.md` | `visitor-financial-requirement-01` | Maintenance/funds requirement — no fixed published minimum; must show sufficient resources for living costs, accommodation, return travel, dependants, and planned paid activities; third-party sponsorship evidence. |
 | `required-documents.md` | `visitor-required-documents-01` | Supporting documents: passport, financial evidence (bank statements showing fund origin), employer/student letters, purpose-specific invitation letters (business, academic, medical treatment). |
-| `application-process.md` | `visitor-application-process-01` | How to apply: online application, ID Check app or VAC biometric appointment, ~3-week standard decision time, long-term (2/5/10-year) visa option and its under-18 cap. |
+| `application-process.md` | `visitor-application-process-01` | How to apply: online application, VAC biometric appointment (ID Check app availability not confirmed on this pass), ~3-week standard decision time, long-term (2/5/10-year) visa option and its under-18 cap. |
 | `fees-and-processing.md` | `visitor-fees-01` | Fee figures: £135 standard fee, £1,172 in-UK extension fee, priority (+£500) and super priority (+£1,000) faster-decision add-ons, with a currency caveat. |
 
-## Known gaps / uncertainties (see also individual files)
+## Recompile note (2026-08-23)
 
-- Direct `WebFetch` of gov.uk and legislation.gov.uk pages was **blocked by this environment's network egress policy** for the entire research pass. All content was instead compiled from `WebSearch` result snippets/summaries that cite official gov.uk URLs, cross-checked across multiple queries for consistency. **This knowledge base has not been verified against the raw, verbatim gov.uk page text or the raw Immigration Rules Appendix Visitor legal text.** A follow-up pass with working gov.uk access is recommended before this is used for anything beyond a portfolio demo.
+This knowledge base was recompiled from **direct `WebFetch` of live gov.uk pages** on 2026-08-23, after the environment's network policy was updated to allow gov.uk access. All nine chunk files below were rewritten from the raw page text/quoted content of their cited `source_url`, superseding an earlier version of this KB that was compiled only from `WebSearch` result snippets (that version's caveats are now resolved — see below).
+
+Sources fetched directly for this recompile: `gov.uk/standard-visitor` (+ its `/apply-standard-visitor-visa` and `/extend-your-stay` sub-pages), `gov.uk/guidance/immigration-rules/immigration-rules-appendix-v-visitor`, `gov.uk/guidance/immigration-rules/immigration-rules-appendix-visitor-permitted-activities`, `gov.uk/government/publications/visit-guidance/visit-caseworker-guidance-accessible--2`, `gov.uk/government/publications/visitor-visa-guide-to-supporting-documents/...`, and `gov.uk/faster-decision-visa-settlement`.
+
+Gaps resolved by this pass:
+- Fee figures (standard £135, transit £74.50, medical £234, academic £234, long-term 2/5/10-year at £506/£903/£1,128, in-UK extension £1,172, priority +£500, super priority +£1,000) are now confirmed directly from live gov.uk pages rather than search summaries — see `fees-and-processing.md`.
+- The Appendix Visitor vs Appendix V: Visitor naming ambiguity is resolved: **`immigration-rules-appendix-visitor` (without "V") 404s** — `immigration-rules-appendix-v-visitor` is the current, correct live guidance page and paragraph numbering (V 1, V 4.2, V 4.4–4.6) is now cited directly — see `eligibility.md` and `prohibited-activities.md`.
+- The volunteering time cap is confirmed as **30 days total** — see `permitted-activities.md`.
+- Financial-document recency: gov.uk does not publish a strict "within N months" rule, but does explicitly flag statements/letters **older than 1 year** as less useful evidence — see `financial-requirement.md` and `required-documents.md`.
+- Translation-document requirements (translator attestation, date, name/signature, contact details) are now quoted directly — see `required-documents.md`.
+
+## Known gaps / uncertainties still remaining (see also individual files)
+
 - No official numeric financial threshold exists for this route (confirmed absence, not a gap) — do not let retrieval/generation invent a specific "£X required" figure.
-- Exact recency requirements for financial documents (e.g. "bank statements must be within the last N months") were not confirmed against an official gov.uk statement — flagged in `required-documents.md`.
-- Exact current fees for the 2/5/10-year long-term visa options were not confirmed with confidence — flagged in `fees-and-processing.md`.
-- Country-specific application mechanics (ID Check app availability, VAC locations) were not researched per-country.
+- The live gov.uk apply page did not explicitly restate the "UK Immigration: ID Check" app as an identity-verification alternative to an in-person VAC appointment; only the in-person route was confirmed on that page in this pass — flagged in `application-process.md`.
+- Country-specific application mechanics (ID Check app availability by nationality, VAC locations, per-country document lists) were not researched per-country.
+- The underlying visa fee table (the ODS/HTML "Home Office immigration and nationality fees" document itself, effective 8 April 2026 per its publication page) was not read directly — its figures were instead cross-confirmed via two live gov.uk consumer-facing pages (`/apply-standard-visitor-visa` and `/extend-your-stay`) rather than the primary fee-table document. Re-verify against the live fee table if this KB is used well after its retrieval date.
