@@ -12,7 +12,7 @@ looping forever.
 from app.config import MAX_VALIDATION_RETRIES
 from app.llm.base import LLMProvider
 from app.storage import repository
-from app.storage.models import ConversationStatus, MessageRole
+from app.storage.models import CaseStatus, MessageRole
 
 from app.workflow.schema import Requirement, VisaSchema
 from app.workflow.validators import validate
@@ -41,8 +41,8 @@ class AssemblyEngine:
         self.llm = llm
         self.schema = schema
 
-    def _context(self, db, conversation_id: str) -> dict[str, str]:
-        fields = repository.get_fields(db, conversation_id)
+    def _context(self, db, case_id: str) -> dict[str, str]:
+        fields = repository.get_fields(db, case_id)
         return {f.field_name: f.value for f in fields if f.status == "valid"}
 
     def _kind_of(self, name: str) -> str:
@@ -51,9 +51,9 @@ class AssemblyEngine:
                 return r.kind
         return "field"
 
-    def next_requirement(self, db, conversation_id: str) -> Requirement | None:
-        context = self._context(db, conversation_id)
-        existing = {f.field_name: f for f in repository.get_fields(db, conversation_id)}
+    def next_requirement(self, db, case_id: str) -> Requirement | None:
+        context = self._context(db, case_id)
+        existing = {f.field_name: f for f in repository.get_fields(db, case_id)}
         for req in self.schema.requirements:
             if not req.applies(context):
                 continue
@@ -62,9 +62,9 @@ class AssemblyEngine:
                 return req
         return None
 
-    def start(self, db, conversation_id: str) -> str:
+    def start(self, db, case_id: str, conversation_id: str) -> str:
         """Call once, right after the Phase 1 -> Phase 2 checkpoint gate passes."""
-        req = self.next_requirement(db, conversation_id)
+        req = self.next_requirement(db, case_id)
         assert req is not None, "requirement schema must have at least one requirement"
         message = (
             "Thanks — I have what I need to start preparing the application package. "
@@ -84,31 +84,31 @@ class AssemblyEngine:
         )
         return raw.get("value")
 
-    def handle_user_message(self, db, conversation_id: str, user_text: str) -> dict:
+    def handle_user_message(self, db, case_id: str, conversation_id: str, user_text: str) -> dict:
         repository.add_message(db, conversation_id, MessageRole.USER, user_text)
-        req = self.next_requirement(db, conversation_id)
+        req = self.next_requirement(db, case_id)
         if req is None:
             reply = "The application package is already complete and awaiting human review."
             repository.add_message(db, conversation_id, MessageRole.AGENT, reply)
             return {"done": True, "escalated": False, "reply_to_user": reply}
 
         extracted = self._extract(req, user_text)
-        context = self._context(db, conversation_id)
+        context = self._context(db, case_id)
         result = validate(req.validator, extracted, context, req.validator_args)
 
         repository.log_audit(
             db,
-            conversation_id,
+            case_id,
             "validation",
             {"field": req.name, "raw_extracted": extracted, "ok": result.ok, "error": result.error},
         )
 
         if result.ok:
-            repository.upsert_field(db, conversation_id, req.name, result.normalized_value, "valid")
-            next_req = self.next_requirement(db, conversation_id)
+            repository.upsert_field(db, case_id, req.name, result.normalized_value, "valid")
+            next_req = self.next_requirement(db, case_id)
             if next_req is None:
-                package = self.build_package(db, conversation_id)
-                repository.set_status(db, conversation_id, ConversationStatus.READY_FOR_HUMAN_REVIEW)
+                package = self.build_package(db, case_id)
+                repository.set_status(db, case_id, CaseStatus.READY_FOR_HUMAN_REVIEW)
                 reply = (
                     "All required information and documents are confirmed. I've put together a draft "
                     "application package below — a caseworker will review it before anything is submitted."
@@ -119,11 +119,11 @@ class AssemblyEngine:
             repository.add_message(db, conversation_id, MessageRole.AGENT, next_req.prompt)
             return {"done": False, "escalated": False, "reply_to_user": next_req.prompt}
 
-        field_row = repository.upsert_field(db, conversation_id, req.name, extracted, "invalid", result.error)
+        field_row = repository.upsert_field(db, case_id, req.name, extracted, "invalid", result.error)
         if field_row.retry_count >= MAX_VALIDATION_RETRIES:
             repository.create_escalation(
                 db,
-                conversation_id,
+                case_id,
                 trigger="persistent_validation_failure",
                 detail=f"Field '{req.name}' failed validation {field_row.retry_count} times: {result.error}",
             )
@@ -138,8 +138,8 @@ class AssemblyEngine:
         repository.add_message(db, conversation_id, MessageRole.AGENT, reply)
         return {"done": False, "escalated": False, "reply_to_user": reply}
 
-    def build_package(self, db, conversation_id: str) -> dict:
-        fields = repository.get_fields(db, conversation_id)
+    def build_package(self, db, case_id: str) -> dict:
+        fields = repository.get_fields(db, case_id)
         valid = {f.field_name: f.value for f in fields if f.status == "valid"}
         return {
             "visa_type": self.schema.visa_type,

@@ -55,11 +55,12 @@ ANTHROPIC_API_KEY=sk-ant-... .venv/bin/python scripts/eval_classification.py
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /conversations` | Start a new conversation |
-| `POST /conversations/{id}/messages` | Send a user message, get the agent's reply + phase status |
-| `GET /conversations/{id}` | Full transcript + current status/visa type |
+| `POST /cases` | Start a new case over the web channel |
+| `POST /cases/{id}/messages` | Send a user message, get the agent's reply + phase status |
+| `GET /cases/{id}` | Full cross-channel transcript + current status/visa type/linked identities |
+| `POST /channels/{whatsapp\|email}/inbound` | Simulated channel webhook — routes by (address, text) through identity resolution, cross-channel case linking, or a new case; see [MULTICHANNEL.md](MULTICHANNEL.md) |
 | `GET /admin/escalations` | The human review queue — every case flagged for a caseworker |
-| `GET /admin/conversations/{id}/audit` | Full audit trail: every LLM call, retrieval, and state transition |
+| `GET /admin/cases/{id}/audit` | Full audit trail: every LLM call, retrieval, and state transition |
 
 ## Repository layout
 
@@ -78,9 +79,13 @@ knowledge base), `data/schemas` (requirement schema).
   per-file and in `data/kb/INDEX.md`. Fine for demonstrating the
   architecture; needs a verification pass with working gov.uk access
   before relying on it for anything beyond that.
-- WhatsApp/Telegram integration is not implemented — only a web-chat stub
-  transport exists, behind the same `ChatTransport` abstraction a real
-  channel would use.
+- Real WhatsApp/email transports (Twilio) are not implemented — only a
+  web-chat stub exists, plus a simulated `/channels/{channel}/inbound`
+  endpoint that exercises the identity-resolution and OTP cross-channel
+  linking logic without a live Twilio account. See
+  [MULTICHANNEL.md](MULTICHANNEL.md) for the full design and what's still
+  outstanding (real Twilio WhatsApp/SendGrid transports, webhook signature
+  verification).
 - Only the Standard Visitor Visa has a full schema + KB; other visa types
   are correctly detected as out of scope and escalated to a human rather
   than mishandled.

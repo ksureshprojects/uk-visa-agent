@@ -1,6 +1,6 @@
 from app.config import MAX_VALIDATION_RETRIES
 from app.storage import repository
-from app.storage.models import ConversationStatus
+from app.storage.models import CaseStatus, ChannelType
 from app.workflow.assembly import AssemblyEngine
 from app.workflow.schema import load_schema
 
@@ -24,23 +24,28 @@ TOURIST_ANSWERS = [
 ]
 
 
+def _new_case_and_thread(db, address="test-user"):
+    identity = repository.find_or_create_identity(db, ChannelType.WEB, address)
+    return repository.create_case(db, identity)
+
+
 def _run_conversation(db, answers):
     schema = load_schema("Standard Visitor")
     llm = ScriptedLLM(answers)
     engine = AssemblyEngine(llm, schema)
-    convo = repository.create_conversation(db, "test-user")
-    engine.start(db, convo.id)
+    case, thread = _new_case_and_thread(db)
+    engine.start(db, case.id, thread.id)
 
     result = None
     for _ in range(len(answers)):
-        result = engine.handle_user_message(db, convo.id, "ignored, scripted")
+        result = engine.handle_user_message(db, case.id, thread.id, "ignored, scripted")
         if result["done"]:
             break
-    return engine, convo, result
+    return engine, case, result
 
 
 def test_tourism_path_skips_business_only_documents_and_completes(db):
-    _, convo, result = _run_conversation(db, TOURIST_ANSWERS)
+    _, case, result = _run_conversation(db, TOURIST_ANSWERS)
 
     assert result["done"] is True
     assert result["escalated"] is False
@@ -60,7 +65,7 @@ def test_business_path_requires_invitation_and_employer_letters(db):
     business_answers[5] = "business"  # purpose_of_visit
     business_answers += ["yes, invitation letter ready", "yes, employer letter ready"]
 
-    _, convo, result = _run_conversation(db, business_answers)
+    _, case, result = _run_conversation(db, business_answers)
 
     assert result["done"] is True
     assert "invitation_letter" in result["package"]["documents_confirmed"]
@@ -73,16 +78,16 @@ def test_persistent_invalid_answers_escalate_instead_of_looping_forever(db):
     answers = ["   "] * (MAX_VALIDATION_RETRIES + 1)
     llm = ScriptedLLM(answers)
     engine = AssemblyEngine(llm, schema)
-    convo = repository.create_conversation(db, "test-user")
-    engine.start(db, convo.id)
+    case, thread = _new_case_and_thread(db)
+    engine.start(db, case.id, thread.id)
 
     result = None
     for _ in range(MAX_VALIDATION_RETRIES):
-        result = engine.handle_user_message(db, convo.id, "ignored")
+        result = engine.handle_user_message(db, case.id, thread.id, "ignored")
 
     assert result["escalated"] is True
-    refreshed = repository.get_conversation(db, convo.id)
-    assert refreshed.status == ConversationStatus.NEEDS_HUMAN_REVIEW
+    refreshed = repository.get_case(db, case.id)
+    assert refreshed.status == CaseStatus.NEEDS_HUMAN_REVIEW
     assert len(refreshed.escalations) == 1
     assert refreshed.escalations[0].trigger == "persistent_validation_failure"
 
@@ -96,12 +101,12 @@ def test_cross_field_departure_validation_rejects_over_6_months(db):
     schema = load_schema("Standard Visitor")
     llm = ScriptedLLM(answers)
     engine = AssemblyEngine(llm, schema)
-    convo = repository.create_conversation(db, "test-user")
-    engine.start(db, convo.id)
+    case, thread = _new_case_and_thread(db)
+    engine.start(db, case.id, thread.id)
 
     for _ in range(9):  # 7 fields up to arrival, 1 rejected departure attempt, 1 corrected departure
-        result = engine.handle_user_message(db, convo.id, "ignored")
+        result = engine.handle_user_message(db, case.id, thread.id, "ignored")
 
-    fields = {f.field_name: f for f in repository.get_fields(db, convo.id)}
+    fields = {f.field_name: f for f in repository.get_fields(db, case.id)}
     assert fields["intended_departure_date"].status == "valid"
     assert fields["intended_departure_date"].value == "2027-03-01"

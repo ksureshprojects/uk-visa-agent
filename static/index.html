@@ -157,7 +157,7 @@ const statusEl = document.getElementById('status');
 const form = document.getElementById('form');
 const input = document.getElementById('input');
 
-let conversationId = null;
+let caseId = null;
 
 function addBubble(role, text) {
   const div = document.createElement('div');
@@ -182,25 +182,25 @@ function setStatus(status) {
 
 async function start() {
   const externalUserId = 'demo-' + Math.random().toString(36).slice(2, 10);
-  const res = await fetch('/conversations', {
+  const res = await fetch('/cases', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({external_user_id: externalUserId}),
   });
   const data = await res.json();
-  conversationId = data.conversation_id;
+  caseId = data.case_id;
   setStatus('advisory');
-  addBubble('agent', "Hi! I'm here to help prepare a UK Standard Visitor Visa case. What brings you to apply — tourism, business, visiting family, or something else?");
+  addBubble('agent', `Hi! I'm here to help prepare a UK Standard Visitor Visa case. Your case reference is ${data.case_reference} — keep it if you'd like to continue this conversation from another channel later. What brings you to apply — tourism, business, visiting family, or something else?`);
 }
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = input.value.trim();
-  if (!text || !conversationId) return;
+  if (!text || !caseId) return;
   input.value = '';
   addBubble('user', text);
 
-  const res = await fetch(`/conversations/${conversationId}/messages`, {
+  const res = await fetch(`/cases/${caseId}/messages`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({text}),
