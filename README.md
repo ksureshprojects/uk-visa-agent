@@ -80,7 +80,8 @@ knowledge base), `data/schemas` (requirement schema).
   before relying on it for anything beyond that.
 - WhatsApp/Telegram integration is not implemented — only a web-chat stub
   transport exists, behind the same `ChatTransport` abstraction a real
-  channel would use.
+  channel would use. See [MULTICHANNEL.md](MULTICHANNEL.md) for the design
+  plan to add WhatsApp + email (via Twilio) with cross-channel case access.
 - Only the Standard Visitor Visa has a full schema + KB; other visa types
   are correctly detected as out of scope and escalated to a human rather
   than mishandled.
