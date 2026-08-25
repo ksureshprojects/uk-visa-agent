@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.api.webhooks import router as twilio_webhooks_router
 from app.config import BASE_DIR
 from app.kb.retrieval import KnowledgeStore
 from app.llm import get_llm_provider
@@ -11,6 +12,7 @@ from app.storage.db import get_session, init_db
 from app.workflow.orchestrator import Orchestrator
 
 app = FastAPI(title="UK Visa Agent Demo")
+app.include_router(twilio_webhooks_router)
 
 _state: dict = {"orchestrator": None}
 
