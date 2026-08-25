@@ -8,6 +8,7 @@ from app.kb.retrieval import KnowledgeStore
 from app.llm import get_llm_provider
 from app.storage import repository
 from app.storage.db import get_session, init_db
+from app.storage.models import ChannelType
 from app.workflow.orchestrator import Orchestrator
 
 app = FastAPI(title="UK Visa Agent Demo")
@@ -30,12 +31,13 @@ def get_orchestrator() -> Orchestrator:
     return orchestrator
 
 
-class StartConversationRequest(BaseModel):
+class StartCaseRequest(BaseModel):
     external_user_id: str
 
 
-class StartConversationResponse(BaseModel):
-    conversation_id: str
+class StartCaseResponse(BaseModel):
+    case_id: str
+    case_reference: str
 
 
 class MessageRequest(BaseModel):
@@ -49,26 +51,47 @@ class MessageResponse(BaseModel):
     package: dict | None = None
 
 
-@app.post("/conversations", response_model=StartConversationResponse)
-def start_conversation(
-    req: StartConversationRequest, orchestrator: Orchestrator = Depends(get_orchestrator)
-) -> StartConversationResponse:
+class InboundChannelRequest(BaseModel):
+    """Stand-in for a real Twilio webhook body. A live WhatsAppTransport /
+    EmailTransport (MULTICHANNEL.md §4, not yet implemented) would parse
+    Twilio's actual payload down to this same (address, text) shape and
+    call orchestrator.route_inbound — this endpoint exists so the
+    cross-channel routing/linking logic is exercisable end-to-end without
+    a live Twilio account."""
+
+    address: str
+    text: str
+
+
+class InboundChannelResponse(BaseModel):
+    reply_to_user: str
+    status: str
+    case_reference: str | None = None
+
+
+@app.post("/cases", response_model=StartCaseResponse)
+def start_case(
+    req: StartCaseRequest, orchestrator: Orchestrator = Depends(get_orchestrator)
+) -> StartCaseResponse:
     db = get_session()
     try:
-        convo = orchestrator.start_conversation(db, req.external_user_id)
-        return StartConversationResponse(conversation_id=convo.id)
+        case, _thread = orchestrator.start_case(db, ChannelType.WEB, req.external_user_id)
+        return StartCaseResponse(case_id=case.id, case_reference=case.reference)
     finally:
         db.close()
 
 
-@app.post("/conversations/{conversation_id}/messages", response_model=MessageResponse)
+@app.post("/cases/{case_id}/messages", response_model=MessageResponse)
 def post_message(
-    conversation_id: str, req: MessageRequest, orchestrator: Orchestrator = Depends(get_orchestrator)
+    case_id: str, req: MessageRequest, orchestrator: Orchestrator = Depends(get_orchestrator)
 ) -> MessageResponse:
     db = get_session()
     try:
+        thread = repository.get_originating_thread(db, case_id)
+        if thread is None:
+            raise HTTPException(status_code=404, detail="Unknown case")
         try:
-            result = orchestrator.handle_message(db, conversation_id, req.text)
+            result = orchestrator.handle_message(db, case_id, thread.id, req.text)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return MessageResponse(
@@ -81,20 +104,50 @@ def post_message(
         db.close()
 
 
-@app.get("/conversations/{conversation_id}")
-def get_conversation(conversation_id: str) -> dict:
+@app.post("/channels/{channel}/inbound", response_model=InboundChannelResponse)
+def channel_inbound(
+    channel: ChannelType, req: InboundChannelRequest, orchestrator: Orchestrator = Depends(get_orchestrator)
+) -> InboundChannelResponse:
+    if channel == ChannelType.WEB:
+        raise HTTPException(status_code=400, detail="Use POST /cases for the web channel")
     db = get_session()
     try:
-        convo = repository.get_conversation(db, conversation_id)
-        if convo is None:
+        result = orchestrator.route_inbound(db, channel, req.address, req.text)
+        return InboundChannelResponse(
+            reply_to_user=result["reply_to_user"],
+            status=result["status"],
+            case_reference=result.get("case_reference"),
+        )
+    finally:
+        db.close()
+
+
+@app.get("/cases/{case_id}")
+def get_case(case_id: str) -> dict:
+    db = get_session()
+    try:
+        case = repository.get_case(db, case_id)
+        if case is None:
             raise HTTPException(status_code=404, detail="Not found")
+        history = repository.get_case_history(db, case_id)
+        identities = repository.get_linked_identities(db, case_id)
+        links = {link.identity_id: link.role.value for link in case.identity_links}
         return {
-            "id": convo.id,
-            "status": convo.status.value,
-            "visa_type": convo.visa_type,
+            "id": case.id,
+            "case_reference": case.reference,
+            "status": case.status.value,
+            "visa_type": case.visa_type,
+            "identities": [
+                {"channel": i.channel.value, "address": i.address, "role": links.get(i.id)} for i in identities
+            ],
             "messages": [
-                {"role": m.role.value, "content": m.content, "created_at": m.created_at.isoformat()}
-                for m in sorted(convo.messages, key=lambda m: m.created_at)
+                {
+                    "role": m.role.value,
+                    "content": m.content,
+                    "channel": m.conversation.identity.channel.value,
+                    "created_at": m.created_at.isoformat(),
+                }
+                for m in history
             ],
         }
     finally:
@@ -111,7 +164,7 @@ def list_escalations() -> dict:
             "escalations": [
                 {
                     "id": r.id,
-                    "conversation_id": r.conversation_id,
+                    "case_id": r.case_id,
                     "trigger": r.trigger,
                     "detail": r.detail,
                     "created_at": r.created_at.isoformat(),
@@ -123,14 +176,14 @@ def list_escalations() -> dict:
         db.close()
 
 
-@app.get("/admin/conversations/{conversation_id}/audit")
-def get_audit_log(conversation_id: str) -> dict:
-    """Full audit trail for one conversation: every LLM call, retrieval, and
+@app.get("/admin/cases/{case_id}/audit")
+def get_audit_log(case_id: str) -> dict:
+    """Full audit trail for one case: every LLM call, retrieval, and
     state transition, in order. This is what makes service audits and model
     improvement possible (see ARCHITECTURE.md section 4)."""
     db = get_session()
     try:
-        entries = repository.get_audit_log(db, conversation_id)
+        entries = repository.get_audit_log(db, case_id)
         return {
             "entries": [
                 {"kind": e.kind, "payload": e.payload, "created_at": e.created_at.isoformat()}

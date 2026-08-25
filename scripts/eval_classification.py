@@ -23,7 +23,7 @@ from app.config import ANTHROPIC_API_KEY
 from app.kb.retrieval import KnowledgeStore
 from app.storage import repository
 from app.storage.db import SessionLocal
-from app.storage.models import Base
+from app.storage.models import Base, ChannelType
 from app.workflow.gate import GateDecision, evaluate_checkpoint
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -88,8 +88,9 @@ def main() -> int:
     passed = 0
     for scenario in SCENARIOS:
         db = _fresh_session()
-        convo = repository.create_conversation(db, f"eval-{scenario.name}")
-        assessment = agent.handle_user_message(db, convo.id, scenario.message)
+        identity = repository.find_or_create_identity(db, ChannelType.WEB, f"eval-{scenario.name}")
+        case, thread = repository.create_case(db, identity)
+        assessment = agent.handle_user_message(db, case.id, thread.id, scenario.message)
         decision, reason = evaluate_checkpoint(assessment, clarify_rounds_used=0)
 
         ok = decision == scenario.expected_gate

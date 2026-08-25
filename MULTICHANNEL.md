@@ -1,6 +1,18 @@
 # Plan: WhatsApp + Email integration, cross-channel case identity
 
-This is a design plan, not yet implemented. It extends the architecture in
+**Status:** phases 1-3 below (schema migration, inbound router, OTP linking
+flow) are implemented and tested — see `app/storage/models.py`,
+`app/workflow/orchestrator.py`, `app/workflow/linking.py`, and
+`tests/test_channels.py`. Phases 4-5 (real Twilio WhatsApp/SendGrid
+transports, webhook signature verification) are not — routing/linking is
+reachable today only via the simulated `POST /channels/{channel}/inbound`
+endpoint, standing in for what a real webhook handler would call after
+parsing Twilio's payload. Phase 6 (cross-channel LLM context) is done; phase
+7 (admin visibility) is partially done — `GET /cases/{id}` shows linked
+identities and merged, channel-tagged history.
+
+This document was originally written as a design plan before any of it was
+built, and is kept here largely as-written. It extends the architecture in
 [ARCHITECTURE.md](ARCHITECTURE.md) — specifically the "real WhatsApp
 integration" item listed there as out of scope — to cover two live channels
 (WhatsApp, email) plus the new requirement of **one case, reachable from
@@ -99,33 +111,42 @@ payloads, different auth headers, different reply semantics (thread by
 `In-Reply-To`/subject vs. WhatsApp's session/template rules).
 
 That's fine, because `app/api/transport.py`'s `ChatTransport`
-abstraction already exists for exactly this reason: `parse_inbound(payload)
--> (external_user_id, text)` / `format_outbound(text) -> payload`. Plan is
-two new implementations:
+abstraction already exists for exactly this reason:
+`parse_inbound(payload) -> (ChannelType, address, text)` /
+`format_outbound(text) -> payload` — implemented as of phase 1, currently
+only by `WebChatTransport` (`ChannelType.WEB`). Plan is two new
+implementations:
 
 - `WhatsAppTransport` — parses Twilio's WhatsApp webhook form fields
   (`From`, `Body`, `MessageSid`), validates the Twilio request signature
   (`X-Twilio-Signature` + auth token — **required**, this is the only
   thing standing between us and spoofed inbound webhooks), returns
-  `("whatsapp:+44...", text)`.
+  `(ChannelType.WHATSAPP, "+44...", text)`.
 - `EmailTransport` — parses SendGrid Inbound Parse's multipart payload
   (`from`, `subject`, `text`), strips quoted reply chains, returns
-  `("email:jane@example.com", text)`; `format_outbound` builds a
-  Mail Send API payload, keeping the case reference in the subject line
-  (`Re: Your visa case [VISA-7F3K9]`) so a reply keeps the ref visible.
+  `(ChannelType.EMAIL, "jane@example.com", text)`; `format_outbound`
+  builds a Mail Send API payload, keeping the case reference in the
+  subject line (`Re: Your visa case [VISA-7F3K9]`) so a reply keeps the
+  ref visible.
+
+Either transport's output feeds `Orchestrator.route_inbound(db, channel,
+address, text)` (implemented — §5-6), which is what a real Twilio webhook
+handler would call once the payload is parsed down to that shape; today
+it's reachable via the simulated `POST /channels/{channel}/inbound`
+endpoint instead.
 
 One open question worth flagging to Twilio product docs before
-committing to the design: Twilio **Conversations API** has, at various
-points, added email as a participant type behind the same
-Conversations abstraction. If that coverage is solid today it would
+committing to the transport implementation: Twilio **Conversations API**
+has, at various points, added email as a participant type behind the
+same Conversations abstraction. If that coverage is solid today it would
 let Twilio's own layer absorb some of the plumbing above. I'd treat
 that as a build-vs-integrate spike (§9), not a blocking assumption —
 either way `ChatTransport` isolates the orchestrator from the answer.
 
-`external_user_id` becomes channel-prefixed (`whatsapp:+447...`,
-`email:jane@example.com`) so the same raw phone number/address can't
-collide across channels or with the web-chat stub, and so `Identity`
-rows self-describe their channel.
+`channel` + `address` are stored separately on `Identity` (implemented)
+rather than as a single prefixed string, so the same raw phone
+number/address can't collide across channels or with the web-chat stub,
+and each `Identity` row self-describes its channel.
 
 ## 5. Message routing (replaces today's single `start_conversation`)
 
@@ -251,30 +272,38 @@ Sequence, e.g. case opened over WhatsApp, user now emails in:
 
 ## 9. Build plan (phased)
 
-1. **Schema migration**: introduce `Case`, `Identity`,
-   `CaseIdentityLink`, `CaseLinkVerification`; migrate `Conversation` →
-   split into `Case` + redefined `Conversation`; backfill one
-   `Identity` + originating `CaseIdentityLink` per existing conversation.
-   `app/storage/repository.py` gets the new lookup functions
-   (`find_identity`, `get_open_case_for_identity`,
-   `create_link_verification`, `consume_link_verification`, ...).
-   Orchestrator/gate/assembly logic unchanged — repointed from
-   `conversation_id` to `case_id` where it currently means "the case."
-2. **Router**: implement §5's find-or-create-identity → route/start/link
-   dispatch in front of `Orchestrator.handle_message`, plus the case
-   reference regex.
-3. **OTP linking flow**: `CaseLinkVerification` + the send/verify
-   handlers from §6, wired to `ChatTransport.format_outbound` for
-   sending the code out-of-band.
-4. **WhatsApp transport**: `WhatsAppTransport` + Twilio webhook endpoint
-   + signature verification + a `FakeWhatsAppClient` (mirrors the
-   existing `tests/fake_llm.py` pattern) for offline tests.
-5. **Email transport**: `EmailTransport` + SendGrid Inbound Parse
-   endpoint + Mail Send integration + a fake client, same pattern.
-6. **Cross-channel context assembly** in the agents (§8).
-7. **Admin visibility**: extend `/admin/conversations/{id}/audit` (or
-   add `/admin/cases/{id}`) to show linked identities and link history,
-   since that's now part of "how did this case get here."
+1. ✅ **Schema migration**: introduced `Case`, `Identity`,
+   `CaseIdentityLink`, `CaseLinkVerification`; split the old `Conversation`
+   into `Case` (workflow state) + redefined `Conversation` (per-channel
+   thread). No pre-existing data to backfill (this repo has no production
+   database). `app/storage/repository.py` got the new lookup functions
+   (`find_or_create_identity`, `get_open_case_for_identity`,
+   `create_link_verification`, `verify_link_code`, ...). Gate/assembly
+   logic unchanged in behavior — repointed onto `case_id` for workflow
+   state and `conversation_id` (now "thread id") for messages only.
+2. ✅ **Router**: `Orchestrator.route_inbound` implements §5's
+   find-or-create-identity → route/start/link dispatch, using the case
+   reference and OTP regexes from `app/workflow/linking.py`.
+3. ✅ **OTP linking flow**: `CaseLinkVerification` + the send/verify
+   logic from §6 (`Orchestrator._start_link` / `_complete_link`), with
+   OTP delivery via an injectable `otp_sender` callable rather than
+   `ChatTransport.format_outbound` directly — decouples "who to notify
+   and with what code" from "how a real channel sends it," and is what
+   `tests/test_channels.py` substitutes with a recording fake.
+4. **WhatsApp transport** (not started): `WhatsAppTransport` + Twilio
+   webhook endpoint + signature verification + a `FakeWhatsAppClient`
+   (mirrors the existing `tests/fake_llm.py` pattern) for offline tests.
+5. **Email transport** (not started): `EmailTransport` + SendGrid Inbound
+   Parse endpoint + Mail Send integration + a fake client, same pattern.
+6. ✅ **Cross-channel context assembly** in the agents (§8) —
+   `repository.get_case_history` merges all threads and
+   `AdvisoryAgent._format_history_for_llm` tags turns by channel once a
+   case has more than one thread.
+7. 🟡 **Admin visibility**: `GET /cases/{id}` now returns linked
+   identities (with role) and the merged, channel-tagged transcript.
+   Still open: audit log entries for `link_otp_sent`/`identity_linked`
+   are written (`/admin/cases/{id}/audit`) but not yet surfaced in a
+   dedicated "how did this case get here" view.
 
 Each phase should land independently testable against fakes, matching
 how `tests/` already isolates the gate/validators/orchestrator from the

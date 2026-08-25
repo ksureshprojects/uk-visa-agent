@@ -157,12 +157,18 @@ answer to "how does an autonomous agent stay safe in a regulated domain."
 
 ## 6. What's out of scope for this demo (and why that's a scoping decision, not a gap)
 
-- **Real WhatsApp/Telegram integration.** The channel is abstracted behind
+- **Real WhatsApp/email transports.** The channel is abstracted behind
   `ChatTransport` (`app/api/transport.py`); only a stub web-chat
-  implementation exists today. Channel onboarding (Meta Business API
-  approval, message templates, session windows) is a separate, independently
-  gated workstream, as noted in the original brief discussion — swapping in
-  a real WhatsApp transport doesn't touch the agent/workflow code.
+  implementation exists today. The case/identity data model, the
+  channel-agnostic inbound router, and the OTP cross-channel case-linking
+  flow are implemented and tested (`app/workflow/orchestrator.py`,
+  `app/workflow/linking.py`, `tests/test_channels.py`) and reachable today
+  via a simulated `/channels/{channel}/inbound` endpoint — see
+  [MULTICHANNEL.md](MULTICHANNEL.md). What's still missing is the actual
+  Twilio wiring (WhatsApp Business API + SendGrid transports, webhook
+  signature verification); Meta's WhatsApp template/session approval is a
+  separate, independently gated workstream on top of that. Swapping in the
+  real transports doesn't touch the router, agent, or workflow code.
 - **Additional visa categories.** The schema-driven design
   (`data/schemas/*.json`) generalizes to Skilled Worker, Student, Family
   visas etc., but only Standard Visitor Visa has a schema and curated KB
@@ -184,14 +190,21 @@ answer to "how does an autonomous agent stay safe in a regulated domain."
 ```
 app/
   agents/       Phase 1 advisory agent, prompt construction, VisaAssessment model
-  workflow/      Phase 2 state machine, checkpoint gate, escalation rules
+  workflow/      Phase 2 state machine, checkpoint gate, escalation rules,
+                  channel-agnostic inbound router + OTP case-linking (linking.py)
   kb/            KB loading, chunking, embedding, retrieval
   llm/           LLMProvider interface + Anthropic adapter (+ stub second adapter)
-  storage/       SQLAlchemy models: conversations, messages, assessments, audit log
-  api/           FastAPI app, ChatTransport abstraction, web-chat stub endpoint
+  storage/       SQLAlchemy models: cases, identities, per-channel conversation
+                  threads, messages, assessments, audit log
+  api/           FastAPI app, ChatTransport abstraction, web-chat + simulated
+                  multi-channel inbound endpoints
 data/
   kb/            Curated markdown source chunks (visitor visa rules)
   schemas/       JSON requirement schema(s) per visa type
 static/          Minimal single-page chat UI
-tests/           Escalation-gate unit tests + classification golden-set eval
+tests/           Escalation-gate unit tests, classification golden-set eval,
+                  cross-channel identity/OTP-linking tests (test_channels.py)
 ```
+
+See [MULTICHANNEL.md](MULTICHANNEL.md) for the case/identity data model and
+the cross-channel linking design in full.

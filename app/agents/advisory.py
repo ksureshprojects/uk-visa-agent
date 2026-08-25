@@ -39,24 +39,38 @@ def _format_kb_context(retrieved: list[RetrievedChunk]) -> str:
     return "\n\n".join(parts)
 
 
+def _format_history_for_llm(history: list) -> list[dict]:
+    """Cross-channel context (MULTICHANNEL.md §8): history here spans every
+    channel thread of the case, not just one. Tag each turn with its
+    originating channel, but only when the case actually has more than one
+    thread — no point cluttering the single-channel case that's still the
+    overwhelming common one."""
+    thread_ids = {m.conversation_id for m in history}
+    multi_channel = len(thread_ids) > 1
+    formatted = []
+    for m in history:
+        content = m.content
+        if multi_channel:
+            content = f"[via {m.conversation.identity.channel.value}] {content}"
+        formatted.append({"role": "user" if m.role == MessageRole.USER else "assistant", "content": content})
+    return formatted
+
+
 class AdvisoryAgent:
     def __init__(self, llm: LLMProvider, kb: KnowledgeStore):
         self.llm = llm
         self.kb = kb
 
-    def handle_user_message(self, db, conversation_id: str, user_text: str) -> VisaAssessment:
+    def handle_user_message(self, db, case_id: str, conversation_id: str, user_text: str) -> VisaAssessment:
         repository.add_message(db, conversation_id, MessageRole.USER, user_text)
-        history = [m for m in repository.get_history(db, conversation_id) if m.role != MessageRole.SYSTEM]
+        history = [m for m in repository.get_case_history(db, case_id) if m.role != MessageRole.SYSTEM]
 
         query = "\n".join(m.content for m in history if m.role == MessageRole.USER)
         retrieved = self.kb.retrieve(query)
         kb_context = _format_kb_context(retrieved)
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(kb_context=kb_context)
 
-        messages = [
-            {"role": "user" if m.role == MessageRole.USER else "assistant", "content": m.content}
-            for m in history
-        ]
+        messages = _format_history_for_llm(history)
 
         raw = self.llm.structured_complete(
             system=system_prompt,
@@ -69,7 +83,7 @@ class AdvisoryAgent:
 
         repository.log_audit(
             db,
-            conversation_id,
+            case_id,
             "retrieval",
             {
                 "query": query,
@@ -80,7 +94,7 @@ class AdvisoryAgent:
         )
         repository.log_audit(
             db,
-            conversation_id,
+            case_id,
             "llm_call",
             {"system_prompt_chars": len(system_prompt), "output": raw},
         )
