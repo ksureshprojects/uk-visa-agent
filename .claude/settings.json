@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env*)"
+    ]
+  },
+  "sandbox": {
+    "credentials": {
+      "files": [
+        { "path": ".env", "mode": "deny" }
+      ]
+    }
+  }
+}
