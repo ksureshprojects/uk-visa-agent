@@ -1,28 +1,66 @@
+import logging
+import threading
+
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.api.webhooks import router as twilio_webhooks_router
-from app.config import BASE_DIR
+from app.config import BASE_DIR, GMAIL_APP_PASSWORD, GMAIL_USER, LOG_LEVEL
 from app.kb.retrieval import KnowledgeStore
 from app.llm import get_llm_provider
+from app.messaging import email_poller
 from app.storage import repository
 from app.storage.db import get_session, init_db
 from app.workflow.orchestrator import Orchestrator
 
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="UK Visa Agent Demo")
 app.include_router(twilio_webhooks_router)
 
-_state: dict = {"orchestrator": None}
+_state: dict = {"orchestrator": None, "email_poller_stop": None, "email_poller_thread": None}
 
 
 @app.on_event("startup")
 def startup() -> None:
+    logger.info("Startup: initializing DB, knowledge base, and LLM provider")
     init_db()
     kb = KnowledgeStore()
     llm = get_llm_provider()
     _state["orchestrator"] = Orchestrator(llm, kb)
+
+    if GMAIL_USER and GMAIL_APP_PASSWORD:
+        stop_event = threading.Event()
+        thread = threading.Thread(
+            target=email_poller.run_forever, kwargs={"stop_event": stop_event}, daemon=True,
+        )
+        thread.start()
+        _state["email_poller_stop"] = stop_event
+        _state["email_poller_thread"] = thread
+        logger.info("Email poller started as a background thread")
+    else:
+        logger.warning(
+            "GMAIL_USER/GMAIL_APP_PASSWORD not set — email channel poller not started",
+        )
+
+    logger.info("Startup complete")
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    stop_event = _state.get("email_poller_stop")
+    if stop_event is not None:
+        stop_event.set()
+        thread = _state.get("email_poller_thread")
+        if thread is not None:
+            thread.join(timeout=5)
+        logger.info("Email poller stopped")
 
 
 def get_orchestrator() -> Orchestrator:

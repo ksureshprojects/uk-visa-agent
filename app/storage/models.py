@@ -149,6 +149,7 @@ class SessionState(str, enum.Enum):
     AWAITING_CASE_CHOICE = "awaiting_case_choice"
     AWAITING_EXISTING_CASE_CONFIRM = "awaiting_existing_case_confirm"
     AWAITING_CASE_REFERENCE = "awaiting_case_reference"
+    AWAITING_CASE_SELECTION = "awaiting_case_selection"
     ACTIVE = "active"
 
 
@@ -213,6 +214,9 @@ class UserSession(Base):
 
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     pending_case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id"), nullable=True)
+    # Comma-separated case ids, in the order they were presented, for the
+    # AWAITING_CASE_SELECTION state (email channel: pick one of up to 5).
+    pending_case_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
     case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id"), nullable=True, index=True)
 
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)

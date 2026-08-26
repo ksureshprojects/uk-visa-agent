@@ -138,6 +138,11 @@ def set_pending_case(db: DBSession, session: UserSession, case_id: str | None) -
     db.commit()
 
 
+def set_pending_case_choices(db: DBSession, session: UserSession, case_ids: list[str]) -> None:
+    session.pending_case_ids = ",".join(case_ids) if case_ids else None
+    db.commit()
+
+
 def link_case(db: DBSession, session: UserSession, case_id: str) -> None:
     session.case_id = case_id
     db.commit()
@@ -179,6 +184,16 @@ def get_most_recent_case(db: DBSession, user_id: str) -> Case | None:
         .filter_by(user_id=user_id)
         .order_by(Case.updated_at.desc())
         .first()
+    )
+
+
+def list_recent_cases(db: DBSession, user_id: str, limit: int = 5) -> list[Case]:
+    return (
+        db.query(Case)
+        .filter_by(user_id=user_id)
+        .order_by(Case.updated_at.desc())
+        .limit(limit)
+        .all()
     )
 
 
