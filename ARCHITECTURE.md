@@ -1,54 +1,45 @@
 # Architecture: UK Visa Service Agent
 
-This document is the primary deliverable for the second half of the brief:
-*"how do we make agentic service delivery predictable and production-grade?"*
-The code in this repo is a working proof of the design described here. It
-started scoped to a single visa category (Standard Visitor Visa) over a
-stub web-chat transport so the pipeline could run end-to-end rather than
-being broad and half-built; it has since grown to four visa categories and
-real WhatsApp/email channels with identity verification, while keeping the
-same two-phase pipeline and gate as the reliability backbone. §8 walks
-through that evolution step by step for anyone comparing this to an earlier
-version of the doc.
+Two-phase pipeline for UK visa case preparation, reachable over WhatsApp,
+email, and web-chat, across four visa categories (Standard Visitor, Skilled
+Worker, Student, Family (Partner)): an LLM-driven advisory phase
+(classification, grounded in RAG) gated into a deterministic
+application-assembly phase. §8 records the trade-offs evaluated as the
+system grew from a single-category web-chat demo into this.
 
 ## 1. Problem framing
-
-Two very different tasks are hiding inside "help someone get a UK visa":
 
 | | Visa classification | Application assembly |
 |---|---|---|
 | Nature | Open-ended judgment over an ambiguous situation | Collecting and validating a known, finite set of facts and documents |
-| Right tool | An LLM agent, grounded in retrieved rules | A deterministic state machine, with an LLM used only for extraction |
-| Failure mode if done wrong | Confidently wrong advice | Silently incomplete/invalid application |
-| How we keep it safe | Confidence gating + citations + escalation | Schema validation, never LLM judgment alone |
+| Right tool | LLM agent, grounded in retrieved rules | Deterministic state machine, LLM used only for extraction |
+| Failure mode | Confidently wrong advice | Silently incomplete/invalid application |
+| Safety mechanism | Confidence gating + citations | Schema validation, never LLM judgment alone |
 
-Treating both as "just ask the agent" is the reliability problem. The design
-below keeps them as two phases with an explicit, auditable gate between them.
+Design consequence: two phases, one explicit, auditable gate between them —
+not a single agent making every kind of decision.
 
 ## 2. Pipeline
 
-Inbound messages now arrive over WhatsApp or email, not just the web-chat
-stub, so there's a channel/identity layer in front of the two-phase pipeline
-that decides *who is messaging and which case they mean* before anything
-touches the advisory agent. See §8.5 for why that layer exists and how its
-own state machine works.
+A channel/identity layer sits in front of the two-phase pipeline and
+resolves *who is messaging and which case they mean* before anything
+reaches the advisory agent (§8.5).
 
 ```
 Inbound WhatsApp / Email / web-chat message
     │
     ▼
 ┌───────────────────────────────┐
-│ IdentitySessionManager          │  channel + identity layer
-│ (app/identity/session_manager)  │  (see §8.5)
+│ IdentitySessionManager          │  channel + identity layer (§8.5)
+│ (app/identity/session_manager)  │
 │                                  │
 │  Email-OTP verification          │──► email delivery: real, via Gmail
 │  (WhatsApp only — email sender   │    SMTP (app/messaging/gmail.py)
-│  address is already proof for    │
-│  the email channel)              │
+│  address is proof for the        │
+│  email channel itself)           │
 │  Case selection (new/existing)   │
-│  Per-case lock so a WhatsApp and │
-│  email message on the same case  │
-│  can't race each other           │
+│  Per-case lock: WhatsApp + email │
+│  on the same case can't race     │
 └──────────────┬───────────────────┘
                │ case resolved, message handed to its Conversation
                ▼
@@ -60,11 +51,11 @@ Orchestrator ── logs every turn ──► Conversation Store (SQLite)
 │ (app/agents/advisory.py)     │
 │                               │
 │  LLM + RAG retrieval          │──► Knowledge Store (app/kb)
-│  over curated, versioned      │    versioned markdown chunks with
-│  Immigration Rules extracts,  │    citation_id + source_url, now
-│  now spanning 4 visa types    │    spanning 4 visa categories,
-│                               │    retrieved by semantic embedding
-│  Output: structured           │    similarity (see §8.1)
+│  over curated, versioned      │    versioned markdown chunks,
+│  Immigration Rules extracts,  │    citation_id + source_url,
+│  4 visa categories             │    semantic embedding retrieval (§8.1)
+│                               │
+│  Output: structured           │
 │  VisaAssessment{              │
 │    candidate_visa_types,      │
 │    confidence,                │
@@ -83,385 +74,304 @@ Orchestrator ── logs every turn ──► Conversation Store (SQLite)
                      │        │ rounds remaining
                      │        ▼
                      │  ┌───────────────────────┐
-                     │  │ CLARIFY: ask a batched  │──┐ loops back to
+                     │  │ CLARIFY: batched        │──┐ loops back to
                      │  │ follow-up question,     │  │ Advisory Agent
                      │  │ bounded by               │  │ for the next
                      │  │ MAX_CLARIFY_ROUNDS (3)   │  │ turn
                      │  └───────────────────────┘◄─┘
                      │        │ rounds exhausted, still not confident
                      │        ▼
-                     │  FORCE_PASS: commit to the top candidate anyway,
-                     │  reply caveats it as best-effort (see §8.6)
+                     │  FORCE_PASS: commit to top candidate,
+                     │  reply caveats it as best-effort (§8.6)
                      ▼        │
               PASS ◄──────────┘
                │
                ▼
 ┌──────────────────────────┐
-│ Visa type has a Phase 2   │──no──► Advisory summary itself IS the
-│ assembly schema? (all 4   │        service for this category — the
-│ supported categories do)  │        conversation stays open for
-└──────────────┬────────────┘        follow-up, no human queue exists
-               │ yes                 to route it to instead (see §8.6)
+│ Visa type has a Phase 2   │──no──► Advisory summary IS the service for
+│ assembly schema? (all 4   │        this category — conversation stays
+│ supported categories do)  │        open for follow-up (§8.6)
+└──────────────┬────────────┘
+               │ yes
                ▼
 ┌───────────────────────────┐
 │ PHASE 2 — Assembly          │
 │ (app/workflow)               │
 │ deterministic zone            │
-│                                │
-│ Finite state machine           │
-│ over a JSON schema              │
-│ (data/schemas/*.json, one        │
-│ per visa type)                    │
-│                                     │
-│ LLM role: extract up to 7 field     │
-│ values per message from NL text     │
-│ ONLY (batched)                       │
+│ Finite state machine over a    │
+│ JSON schema (data/schemas/,     │
+│ one per visa type)               │
+│                                    │
+│ LLM: extracts ≤7 field values      │
+│ per message from NL text ONLY       │
+│ (batched)                            │
 │                                        │
-│ Validator role: format, cross-field,   │
-│ document checklist — LLM never marks    │
-│ a field "done"; a failing field is just │
-│ re-asked (no escalation queue exists,    │
-│ see §8.6)                                 │
+│ Validator: format, cross-field,        │
+│ document checklist — never the LLM.     │
+│ Failing field is re-asked (§8.6)         │
 └──────────────┬─────────────────────────────┘
                │ all required fields + docs pass validation
                ▼
 ┌─────────────────────────┐
 │ HUMAN REVIEW GATE         │  always required before "final" — the one
-│ produces a submission-    │  human checkpoint that still exists in this
-│ ready DRAFT package, never│  system (this is a deliberate product
-│ an auto-submitted one.    │  boundary — see §5). The completed package
-│ Emailed to the user as a  │  is also emailed to the user directly
-│ plain-text summary, even  │  (app/messaging/package_summary.py), even
-│ on a WhatsApp case.       │  if the conversation happened over WhatsApp.
-└─────────────────────────┘
+│ produces a submission-    │  human checkpoint in this system (§5). Also
+│ ready DRAFT package, never│  emailed to the user directly
+│ an auto-submitted one.    │  (app/messaging/package_summary.py), even on
+└─────────────────────────┘  a WhatsApp case.
 ```
 
 ## 3. Why RAG, not fine-tuning
 
-The Immigration Rules change multiple times a year (Appendix updates, fee
-changes, threshold changes). A fine-tuned model bakes facts into weights that
-go stale silently and expensively to refresh. RAG over a versioned corpus:
+- The Immigration Rules change multiple times a year (appendix, fee,
+  threshold updates); a fine-tuned model bakes facts into weights that go
+  stale silently.
+- RAG over a versioned corpus: citable (`citation_id` + `source_url` +
+  `retrieved_date`), updatable by editing/re-embedding markdown with no
+  retraining, and staleness-visible — every stored assessment records the
+  `kb_version` it used.
+- Fine-tuning is the right tool for a different problem (consultative tone,
+  question style), not for facts that must stay current and citeable — not
+  needed at this scope.
 
-- lets the agent cite the exact rule it relied on (`citation_id` +
-  `source_url` + `retrieved_date`) — auditable, not just "the AI said so";
-- can be updated by editing/re-embedding markdown files, no retraining;
-- makes staleness visible: every stored assessment records which KB version
-  it used, so a rule change can be swept for affected past conversations.
+## 4. Reliability mechanisms
 
-Fine-tuning would be the right tool for a *different* problem — matching a
-specific consultative tone or question-asking style — not for injecting facts
-that must stay current and citeable. Not needed for this demo's scope.
-
-## 4. Reliability mechanisms (the core of part 2 of the brief)
-
-**Checkpoint gate (Phase 1 → Phase 2).** A pure function over the
-`VisaAssessment` struct, not a model call: advance only if
-`confidence >= THRESHOLD`, zero unresolved contradictions, and every
-eligibility claim carries a citation. This is what makes the system
-*predictable* rather than merely *plausible* — the gate's logic is testable
-and doesn't drift with prompt changes.
-
-**Bounded clarification loop.** Phase 1 may ask at most `MAX_CLARIFY_ROUNDS`
-(3) follow-up questions — each batching up to 3 related questions at once —
-before the gate is forced to commit to a determination rather than keep
-asking. Prevents an agent stuck in "just one more question" from stalling
-the conversation indefinitely — a concrete, testable reliability property.
-
-**Gate outcomes** (`app/workflow/gate.py`, `evaluate_checkpoint`), all
-rule-based — no human queue exists in this deployment, so every path
-terminates in either another clarifying question or a determination, never
-a dead end:
-1. `CLARIFY` — confidence below threshold, missing citations, an unresolved
-   contradiction, or two candidate visa types too close to call — and
-   clarification rounds remain.
-2. `FORCE_PASS` — same conditions as above, but `MAX_CLARIFY_ROUNDS` is
-   exhausted: the gate commits to the top candidate anyway rather than
-   stalling, and the orchestrator's reply explicitly caveats it as a
-   best-effort assessment (`_best_effort_reply`) rather than presenting it
-   with full confidence.
-3. `PASS` — confidence at/above threshold, every eligibility claim carries a
-   citation, no unresolved contradictions, and a clear top candidate.
-
-`high_stakes_flags` (prior refusal, criminal record mention, asylum-adjacent
-language) are still extracted by the advisory agent and still logged to
-every audit entry for the turn, but no longer force a distinct outcome —
-see §8.6 for why, and the honest trade-off that comes with it.
-
-**Deterministic validation, no escalation-out in Phase 2 either.** A field
-that repeatedly fails validation is simply re-asked (with a gentler prompt
-after `MAX_VALIDATION_RETRIES`), not routed to a human — the retry count is
-still tracked per field for the audit trail, it just no longer caps
-anything. See §8.6.
-
-**State snapshotting & recovery.** Every checkpoint (phase transition, field
-update) persists the full structured state — not just chat history — to the
-Conversation Store. A resumed session, or a case reviewed later, picks up
-from that structured state rather than replaying the transcript. Each write
-is a single row insert (append-only), so a retried step after a timeout does
-not corrupt state. The identity/case layer (§8.5) mirrors this pattern with
-its own append-only `ChannelMessage` log, independent of the Conversation
-Store's message log.
-
-**Audit trail.** Every LLM call (prompt, retrieved chunks with their
-citation ids, raw output), every validator result, and every state
-transition is logged to the Conversation Store. This is what makes "service
-audits and model improvement" (the second-order goal in the brief) possible
-later — you can replay exactly what the agent saw and decided at any point.
-
-**Deterministic-only completion.** Phase 2 fields and documents are marked
-complete exclusively by validator functions (regex/format checks, date
-logic, cross-field consistency, document-type/recency checks) — never by the
-LLM asserting "this looks fine." The LLM's only job in Phase 2 is turning
-free text into structured field values — up to 7 fields at once are batched
-into a single question, extracted from one reply, and validated
-independently — if extraction is ambiguous for a given field, the validator
-rejects that field and the agent re-prompts for it specifically.
+- **Checkpoint gate** (`app/workflow/gate.py`) — pure function over
+  `VisaAssessment`, not a model call. Requires confidence ≥ threshold, zero
+  unresolved contradictions, and a citation on every eligibility claim.
+- **Bounded clarification** — ≤ `MAX_CLARIFY_ROUNDS` (3), each batching up
+  to 3 related questions.
+- **Gate outcomes**, all rule-based, no dead end (no human queue exists —
+  §8.6):
+  - `CLARIFY` — insufficient confidence/citations, unresolved contradiction,
+    or ambiguous top candidates, with rounds remaining.
+  - `FORCE_PASS` — same triggers, rounds exhausted: commits to the top
+    candidate, reply explicitly caveated as best-effort
+    (`_best_effort_reply`).
+  - `PASS` — confidence at/above threshold, cited, uncontradicted, clear
+    top candidate.
+- **`high_stakes_flags`** (prior refusal, criminal record, asylum-adjacent
+  language) — extracted and audit-logged on every turn, no longer a
+  distinct gate path (§8.6).
+- **Phase 2 validation** — a field that fails validation is re-asked
+  (gentler prompt after `MAX_VALIDATION_RETRIES`), never escalated; retry
+  count is tracked for audit only.
+- **State snapshotting** — every checkpoint (phase transition, field
+  update) persists full structured state as an append-only row, not just
+  chat history. The identity/case layer mirrors this with its own
+  append-only `ChannelMessage` log (§8.5).
+- **Audit trail** — every LLM call (prompt, retrieved chunks + citation
+  ids, output), validator result, and state transition is logged to the
+  Conversation Store.
+- **Deterministic-only completion** — Phase 2 fields/documents are marked
+  complete exclusively by validator functions; the LLM's only role is
+  extracting field values, never judging completeness.
 
 ## 5. Product/compliance boundary
 
 Giving immigration advice in the UK is OISC-regulated (or requires a
-qualified solicitor). This system is designed as a **case preparation
-assistant**: it never tells a user "you qualify, submit this," and Phase 2's
-output is explicitly a *draft package* gated on human review before
-anything is filed. This isn't a missing feature — it's a deliberate
-boundary reflected in the Human Review Gate in §2, and it's the honest
-answer to "how does an autonomous agent stay safe in a regulated domain."
+qualified solicitor). This system is a **case preparation assistant**: it
+never tells a user "you qualify, submit this," and Phase 2 output is
+explicitly a *draft package* gated on human review before anything is
+filed.
 
-Note the scope of that boundary narrowed as the gate evolved (§8.6): the
+The scope of that boundary narrowed as the gate evolved (§8.6): the
 original design also routed low-confidence/high-stakes *advisory* turns to
-a human caseworker before any determination was given. That escalation path
-no longer exists — Phase 1 now always resolves to a (possibly best-effort,
-clearly caveated) determination. The Human Review Gate on the *Phase 2
-output* — nothing is ever auto-submitted — is unchanged and is still the
-system's real compliance backstop.
+a human caseworker before any determination was given. That path no longer
+exists — Phase 1 always resolves to a (possibly best-effort, caveated)
+determination. The Human Review Gate on the Phase 2 output — nothing is
+ever auto-submitted — is unchanged and is the system's compliance backstop.
 
-## 6. What's out of scope for this demo (and why that's a scoping decision, not a gap)
+## 6. Out of scope
 
-- **Auth, deployment, scaling, fine-tuning.** Not the interesting problem
-  for this brief; noted so their absence reads as scope control, not
+- **Auth, deployment, scaling, fine-tuning** — scope control, not
   oversight.
-- **A human caseworker queue.** `EscalationRecord` (`app/storage/models.py`)
-  and `repository.create_escalation` still exist in the schema, but nothing
-  calls the latter anymore — see §8.6 for why the gate stopped escalating
-  and what that trades away.
-- **Document OCR/verification.** Document checklist items are confirmed by
-  the user in chat (presence/description), not OCR-verified — a real
-  deployment would plug document processing in at that point in Phase 2's
-  state machine.
-- **Telegram, or any channel beyond WhatsApp/email/web-chat.** WhatsApp and
-  email are now real (§8.2, §8.3, §8.5); a further channel would need its own webhook
-  handler plus a `ChannelType` entry, but reuses the entire identity/case/
+- **A staffed human caseworker queue.** `EscalationRecord`
+  (`app/storage/models.py`) and `repository.create_escalation` exist in the
+  schema; nothing calls the latter (§8.6).
+- **Document OCR/verification.** Checklist items are confirmed by user
+  description in chat, not OCR-verified.
+- **Channels beyond WhatsApp/email/web-chat.** A further channel needs its
+  own webhook handler and a `ChannelType` entry; reuses the identity/case/
   advisory/assembly stack unchanged.
-- **KB verification against raw gov.uk text.** This environment's network
-  egress blocked direct fetches of gov.uk/legislation.gov.uk pages during
-  the *original* Standard Visitor curation pass, so that slice of
-  `data/kb/` was compiled from cross-checked web-search snippets citing
-  official gov.uk URLs rather than the raw page/rule text itself. Flagged
-  per-file and in `data/kb/INDEX.md`. The three visa categories added later
-  (Skilled Worker, Student, Family (Partner)) carry the same caveat.
-  Sufficient to demonstrate the RAG/citation architecture; a production
-  system would re-verify against primary sources before relying on it for
-  real advice.
+- **Remaining KB gaps.** All four categories are compiled directly from
+  live gov.uk pages (`data/kb/INDEX.md`'s "Recompile note"), not
+  search-result snippets. What remains is a set of specific, per-route
+  flagged gaps (e.g. no single published Skilled Worker salary figure,
+  some country-specific mechanics not researched) rather than a blanket
+  verification caveat — see `data/kb/INDEX.md` and individual chunk files.
 - **SendGrid-based email sending.** `app/messaging/twilio_client.send_email`
-  is written against SendGrid's Mail Send API but is a stub (returns
-  `{"status": "stubbed", ...}` without calling out) pending SendGrid
-  credentials. All real email today — OTP codes, replies, package summaries
-  — goes out through `app/messaging/gmail.py`'s SMTP client instead;
-  see §8.3 and §8.5.
+  targets SendGrid's Mail Send API but is a stub pending credentials. All
+  real email today (OTP codes, replies, package summaries) goes through
+  `app/messaging/gmail.py`'s SMTP client (§8.3, §8.5).
 
 ## 7. Repository layout
 
 ```
 app/
   agents/       Phase 1 advisory agent, prompt construction, VisaAssessment model
-  identity/      Identity/case state machine (session_manager.py) + per-case
-                 locking (case_locks.py) sitting in front of the pipeline — §8.5
-  messaging/     Outbound/inbound channel adapters: gmail.py (real SMTP/IMAP),
-                 twilio_client.py (real WhatsApp, stub SendGrid email, §8.3),
-                 email_poller.py (IMAP polling + enquiry filtering, §8.2),
-                 package_summary.py (Phase 2 package -> email formatting)
-  workflow/      Phase 2 state machine, checkpoint gate (no escalation, §8.6)
-  kb/            KB loading, chunking, embedding, retrieval — semantic
-                 embeddings via fastembed, not TF-IDF (§8.1)
-  llm/           LLMProvider interface + Anthropic adapter (+ stub second adapter)
-  storage/       SQLAlchemy models: conversations/messages/assessments/audit
-                 log (advisory pipeline) + users/cases/sessions/channel
-                 messages (identity layer, §8.5)
-  api/           FastAPI app, ChatTransport abstraction + web-chat stub
-                 endpoint, webhooks.py (Twilio inbound WhatsApp/email)
+  identity/     Identity/case state machine (session_manager.py) + per-case
+                locking (case_locks.py) sitting in front of the pipeline — §8.5
+  messaging/    Channel adapters: gmail.py (real SMTP/IMAP), twilio_client.py
+                (real WhatsApp, stub SendGrid email, §8.3), email_poller.py
+                (IMAP polling + enquiry filtering, §8.2), package_summary.py
+  workflow/     Phase 2 state machine, checkpoint gate (no escalation, §8.6)
+  kb/           KB loading, chunking, embedding, retrieval — semantic
+                embeddings via fastembed, not TF-IDF (§8.1)
+  llm/          LLMProvider interface + Anthropic adapter (+ stub second adapter)
+  storage/      SQLAlchemy models: conversations/messages/assessments/audit
+                log (advisory pipeline) + users/cases/sessions/channel
+                messages (identity layer, §8.5)
+  api/          FastAPI app, ChatTransport abstraction + web-chat stub
+                endpoint, webhooks.py (Twilio inbound WhatsApp/email)
 data/
-  kb/            Curated markdown source chunks, now across 4 visa categories
-  schemas/       JSON requirement schema per visa type (4 today)
-static/          Minimal single-page chat UI
-scripts/         start_tunnel.sh — Cloudflare quick tunnel for exposing a
-                 local dev server publicly without a static IP or open
-                 firewall port (§8.4)
-tests/           Checkpoint-gate, validator, state-machine, identity-session,
-                 messaging-adapter unit tests + classification golden-set eval
+  kb/           Curated markdown source chunks, 4 visa categories
+  schemas/      JSON requirement schema per visa type (4 today)
+static/         Minimal single-page chat UI
+scripts/        start_tunnel.sh — Cloudflare quick tunnel (§8.4)
+tests/          Checkpoint-gate, validator, state-machine, identity-session,
+                messaging-adapter unit tests + classification golden-set eval
 ```
 
-## 8. How this evolved since the initial version
+## 8. Design trade-offs since the initial version
 
-The initial commit (`Scaffold WhatsApp-native UK visa agent: two-phase
-pipeline demo`) shipped exactly one visa category, one channel (a web-chat
-stub), no identity layer, and a gate with an escalate-to-human path for
-everything it wasn't confident about. Everything below is what changed on
-top of that and, more importantly, *why* — most of these weren't isolated
-feature adds, they're the same reliability problem (§1) re-solved once the
-system had to actually run against multiple visa types and real,
-un-authenticated channels.
+The initial commit shipped one visa category, one channel (web-chat stub),
+no identity layer, and a gate that escalated to a human for anything it
+wasn't confident about. Each item below states the constraint, the
+decision, and the trade-off accepted.
 
-### 8.1 Retrieval: TF-IDF → local semantic embeddings
+### 8.1 Retrieval matching
 
-The original `Vectorizer` (`app/kb/embeddings.py`) was hand-rolled TF-IDF
-cosine similarity with a stopword list — a deliberate choice at the time to
-avoid an embedding API dependency for a KB of a few dozen chunks. It has a
-real weakness once the KB stops being one visa type's worth of
-hand-matched vocabulary: TF-IDF ranks on literal word overlap, so a user
-writing "my girlfriend" against a KB chunk written as "partner" scores low
-even though they mean the same eligibility rule.
-
-The fix keeps the "no external API dependency" property but swaps the
-matching strategy: `fastembed` runs a small quantized transformer
-(`BAAI/bge-small-en-v1.5`) fully on-device via `onnxruntime`, not PyTorch —
-still zero network calls at inference time, only a one-off model download
-cached to `EMBEDDING_MODEL_CACHE_DIR` (`.model_cache/`, gitignored) so a
-restart doesn't re-download it. This ranks by semantic similarity, so
-colloquial or synonymous phrasing still retrieves the right chunk. `RETRIEVAL_TOP_K`
-was also raised 4 → 6 (`app/config.py`) once the corpus spanned four visa
-categories rather than one, so a query has enough headroom to surface the
-right category's chunks even when a generic term (e.g. "documents") matches
-chunks across several categories.
+- **Constraint.** The original `Vectorizer` (`app/kb/embeddings.py`) was
+  hand-rolled TF-IDF cosine similarity — no embedding API dependency, fine
+  for one visa type's hand-matched vocabulary. It ranks on literal word
+  overlap, so a query like "my girlfriend" scores low against a KB chunk
+  written as "partner" even when they mean the same eligibility rule — a
+  real problem once the KB covers four categories.
+- **Decision.** Swap to `fastembed` running a small quantized transformer
+  (`BAAI/bge-small-en-v1.5`) on-device via `onnxruntime` — zero network
+  calls at inference, one-off model download cached to
+  `EMBEDDING_MODEL_CACHE_DIR` (`.model_cache/`, gitignored). Ranks by
+  semantic similarity, so synonymous/colloquial phrasing still retrieves
+  the right chunk. `RETRIEVAL_TOP_K` raised 4 → 6 (`app/config.py`) to give
+  a query enough headroom across four categories' worth of chunks.
+- **Trade-off accepted.** A larger dependency (`onnxruntime` + a cached
+  model file) and a one-time download at first run, in exchange for
+  retrieval quality that holds up across a multi-category KB.
 
 ### 8.2 Email channel: inbound filtering
 
-Once the email channel polls a real mailbox (`app/messaging/email_poller.py`)
-rather than a dedicated agent-only address, most unread mail — newsletters,
-notifications, unrelated correspondence — is not a case enquiry at all, and
-blindly running every unread message through identity verification and the
-advisory agent would be both wrong behavior and a wasted LLM call. Two
-layers of filtering were added: `gmail.fetch_unread` takes
-`text_filter_terms` as a server-side IMAP pre-filter so a large `UNSEEN`
-backlog doesn't have every message's full body downloaded just to be
-discarded; `_looks_like_visa_enquiry` then re-checks, requiring both "uk"
-and "visa" as whole words in the subject or body, as the actual gate. A
-message that doesn't pass is logged and left unread rather than silently
-consumed, so nothing is lost if the filter is ever too strict.
+- **Constraint.** The email channel polls a real mailbox
+  (`app/messaging/email_poller.py`), not a dedicated agent-only address —
+  most unread mail (newsletters, notifications, unrelated correspondence)
+  is not a case enquiry, and running it through identity verification and
+  the advisory agent would be wrong behavior and a wasted LLM call.
+- **Decision.** Two filter layers: `gmail.fetch_unread(text_filter_terms=...)`
+  as a server-side IMAP pre-filter (avoids downloading full bodies for a
+  large `UNSEEN` backlog just to discard them), then
+  `_looks_like_visa_enquiry` requiring both "uk" and "visa" as whole words
+  in subject or body as the actual gate. Non-matching messages are logged
+  and left unread, not consumed.
+- **Trade-off accepted.** A real enquiry that doesn't use either word is
+  missed rather than mishandled — considered the safer failure mode for an
+  unauthenticated inbox.
 
 ### 8.3 Twilio integration: real WhatsApp sending
 
-`app/messaging/twilio_client.py` is new: `send_whatsapp` calls Twilio's
-Messaging API for real (`TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` /
-`TWILIO_WHATSAPP_FROM`), which meant handling a constraint that didn't exist
-in the original web-chat-only design — Twilio's WhatsApp API rejects an
-over-limit message body outright (error 21617) rather than auto-segmenting
-the way plain SMS does, so `_split_message` breaks long replies (a batched
-Phase 2 question, or a full advisory determination) into multiple sends,
-preferring paragraph then word boundaries so a chunk never cuts mid-word.
-`send_email` on this same client is written against Twilio's SendGrid Mail
-Send API but is left a stub pending SendGrid credentials — the email
-channel's actual sends go through `app/messaging/gmail.py` (SMTP/IMAP)
-instead (§8.5), which was simpler to stand up for this demo than getting a
-SendGrid sender identity verified.
+- **Constraint.** `send_whatsapp` calls Twilio's Messaging API for real
+  (`TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_WHATSAPP_FROM`).
+  Twilio's WhatsApp API rejects an over-limit body outright (error 21617)
+  rather than auto-segmenting like plain SMS — a constraint the original
+  web-chat-only design didn't have.
+- **Decision.** `_split_message` breaks long replies (a batched Phase 2
+  question, a full advisory determination) into multiple sends, preferring
+  paragraph then word boundaries so no chunk cuts mid-word.
+  `send_email` on the same client targets Twilio's SendGrid Mail Send API
+  but is left a stub; real email sends go through `app/messaging/gmail.py`
+  instead (§8.5) — simpler to stand up than a verified SendGrid sender
+  identity for this scope.
+- **Trade-off accepted.** Two different email-sending code paths exist
+  (SendGrid stub, Gmail SMTP live) rather than one unified path, in
+  exchange for not blocking WhatsApp delivery on SendGrid onboarding.
 
-### 8.4 Cloudflare quick tunnel: a hard-to-guess public URL
+### 8.4 Cloudflare quick tunnel
 
-Testing the WhatsApp/email webhooks needs a public URL for Twilio/SendGrid
-to POST to, but this deployment runs on a machine without a static IP or
-any opened firewall port (e.g. a GCE VM). `scripts/start_tunnel.sh` starts
-the app on `127.0.0.1` and pipes it through `cloudflared tunnel --url`,
-Cloudflare's free "quick tunnel" — an outbound-only connection from the VM
-to Cloudflare's edge, so no inbound firewall rule is ever needed. The
-tradeoff is explicit and documented in the script itself: since the app has
-no auth, the resulting `*.trycloudflare.com` URL is an open door to anyone
-who has it. The **only** mitigation is that a quick tunnel's hostname is a
-randomly generated, unguessable subdomain that isn't published or indexed
-anywhere — not a substitute for real auth, just enough obscurity for
-throwaway manual testing, and the script's own comments say so.
+- **Constraint.** Testing WhatsApp/email webhooks needs a public URL for
+  Twilio/SendGrid to POST to; this deployment runs without a static IP or
+  an open firewall port (e.g. a GCE VM).
+- **Decision.** `scripts/start_tunnel.sh` runs the app on `127.0.0.1` and
+  pipes it through `cloudflared tunnel --url` — an outbound-only
+  connection to Cloudflare's edge, no inbound firewall rule needed.
+- **Trade-off accepted.** The app has no auth, so the resulting
+  `*.trycloudflare.com` URL is an open door to anyone who has it. The only
+  mitigation is that a quick-tunnel hostname is randomly generated and
+  unpublished — obscurity, not security, sufficient only for throwaway
+  manual testing (documented in the script itself).
 
-### 8.5 Identity verification: the email-OTP workflow
+### 8.5 Identity verification: email-OTP workflow
 
-The original design had no notion of "who is this," since the only channel
-was a stub that took a caller-supplied `external_user_id` directly. Real
-channels can't do that: a WhatsApp phone number or an inbound email address
-is an identifier, not proof of identity, and a case-preparation assistant
-handling immigration details can't let a phone number alone pull up
-somebody else's case. `app/identity/session_manager.py` (`IdentitySessionManager`)
-adds a state machine (`UserSession.state`) in front of the advisory
-pipeline:
+- **Constraint.** The original design had no notion of "who is this" — the
+  only channel was a stub taking a caller-supplied `external_user_id`
+  directly. A WhatsApp phone number or inbound email address is an
+  identifier, not proof of identity; a case-preparation assistant handling
+  immigration details can't let a phone number alone pull up someone else's
+  case.
+- **Decision.** `IdentitySessionManager` (`app/identity/session_manager.py`)
+  adds a state machine on `UserSession.state` in front of the advisory
+  pipeline:
+  - WhatsApp: `AWAITING_EMAIL` → (6-digit code emailed via
+    `gmail.send_email`; `OTP_LENGTH` / `OTP_EXPIRY_MINUTES` /
+    `OTP_MAX_ATTEMPTS` in `app/config.py`) → `AWAITING_OTP` → (correct code)
+    `AWAITING_CASE_CHOICE`. Expiry or too many attempts loops back to
+    `AWAITING_EMAIL`, not a permanent lockout.
+  - Email: no OTP — the sender's `From` address is already proof of control
+    of that inbox; goes straight to case selection scoped to that sender.
+  - Both converge on one case-selection sub-machine (new / resume most
+    recent / reference an existing id / pick from a numbered list). Once a
+    case is `ACTIVE`, the message that started the session is handed
+    straight to the advisory pipeline rather than discarded.
+  - `User`/`Case`/`UserSession`/`ChannelMessage` (`app/storage/models.py`)
+    are a separate model group from `Conversation`/`Message`: one answers
+    *who is messaging and which case*, the other *what the advisory
+    pipeline decided for that case's conversation*. A `Case` lazily gets a
+    `Conversation` only once `ACTIVE`.
+  - `app/identity/case_locks.py` adds a per-case lock, since the email
+    poller (background thread) and a WhatsApp webhook (request-pool
+    thread) can be mid-processing at the same instant — prevents duplicate
+    answers or double-incremented clarify rounds on the same case.
+    Different cases still process fully in parallel.
+- **Trade-off accepted.** Every WhatsApp session now costs one extra
+  round-trip (email + OTP) before reaching the advisory agent, in exchange
+  for not letting a bare phone number impersonate an existing case owner.
 
-- **WhatsApp** goes through email-OTP verification, since a phone number
-  alone doesn't identify who's messaging: `AWAITING_EMAIL` →
-  (`gmail.send_email` sends a 6-digit code, `OTP_LENGTH`/`OTP_EXPIRY_MINUTES`/
-  `OTP_MAX_ATTEMPTS` in `app/config.py`) → `AWAITING_OTP` → (correct code)
-  `AWAITING_CASE_CHOICE`. An expired code or too many wrong attempts loops
-  back to `AWAITING_EMAIL` rather than locking the user out permanently.
-- **Email** skips OTP entirely — the sender's `From` address already proves
-  they control that inbox, which is the same proof an OTP-to-email would
-  establish anyway, so an email session goes straight to case selection
-  scoped to that sender's own cases.
-- Both paths converge on the same case-selection sub-machine (new case /
-  resume most recent / reference an existing case id by hand, or pick from
-  a numbered list for email's multi-case case), and once a case is
-  `ACTIVE`, `_activate_case` hands the message that started the session
-  straight to the advisory pipeline rather than a generic "how can I help,"
-  so answering a verification prompt never throws away what the user
-  originally said.
+### 8.6 Gate outcomes: escalation → always-a-determination
 
-This is also why a `User`/`Case`/`UserSession`/`ChannelMessage` model group
-(`app/storage/models.py`) sits alongside, not merged into, the original
-`Conversation`/`Message` models: the two model groups answer different
-questions — *who is messaging and which case* vs. *what has the advisory
-pipeline decided for this specific case's conversation* — and a `Case`
-lazily gets its own `Conversation` only once it goes `ACTIVE`. Since the
-email poller (background thread) and a WhatsApp webhook (request-pool
-thread) can now both be mid-processing at the same instant, `app/identity/case_locks.py`
-adds a per-case lock so two channels landing on the same case can't race
-each other into duplicate answers or double-incremented clarify rounds —
-different cases still process fully in parallel.
-
-### 8.6 Case/gate state-transition iteration: escalation → always-a-determination
-
-This is the largest behavioral change, and it's a genuine trade-off, not a
-pure improvement — worth stating plainly rather than glossing over.
-
-The original gate (`GateDecision.ESCALATE`) routed low-confidence
-determinations, unresolved contradictions, ambiguous visa types, and
-**any** high-stakes flag (prior refusal, criminal record mention,
-asylum-adjacent language) — unconditionally, regardless of confidence — to
-`ConversationStatus.NEEDS_HUMAN_REVIEW`, on the reasoning that the cost of a
-wrong autonomous answer is highest exactly there. That model assumed a
-caseworker queue actually gets worked. This deployment doesn't have one —
-there's no caseworker UI, no notification, nothing consuming
-`EscalationRecord` rows — so under the original gate, an escalated
-conversation was a dead end from the user's point of view: told "a
-caseworker will follow up," with no caseworker who ever would.
-
-The gate was rewritten (`app/workflow/gate.py`) to never produce a dead
-end: `GateDecision` is now only `CLARIFY` or `PASS`/`FORCE_PASS`.
-`CLARIFY` behaves as before, bounded by `MAX_CLARIFY_ROUNDS`. Once rounds
-are exhausted without a confident, cited, uncontradicted, unambiguous
-determination, the gate now **force-passes**: it commits to the top
-candidate and the orchestrator's reply (`_best_effort_reply` in
-`app/workflow/orchestrator.py`) explicitly caveats it as best-effort,
-surfacing any contradictions or missing info it's aware of rather than
-presenting it as certain. `high_stakes_flags` are still extracted and still
-logged on every audit entry for the turn (so the information isn't lost —
-it's still visible to whoever reviews the audit trail later), but no longer
-force a different code path; a high-stakes case now gets the same
-confidence-gated treatment as any other. The same pattern was applied in
-Phase 2: a field that keeps failing validation is simply re-asked, forever
-if need be, instead of escalating after `MAX_VALIDATION_RETRIES`.
-
-The honest framing: this trades "some users get told a human is coming (but
-none actually do)" for "every user gets a real, usable answer, but the
-system's own worst-case safety net — routing exactly the highest-stakes
-situations to a human — no longer exists." That's a defensible trade *for a
-system with no human on the other end of the queue*, and it's why §5's
-compliance boundary was narrowed to lean entirely on the Human Review Gate
-over the Phase 2 *output* (never auto-submitted) rather than on an advisory-
-stage escalation that had no one to answer it. A production deployment that
-actually staffs a caseworker queue should restore something closer to the
-original `ESCALATE` path for the high-stakes and low-confidence cases —
-the code for that reasoning still exists in git history
-(`app/workflow/gate.py` prior to this change) if it's needed again.
+- **Constraint.** The original gate (`GateDecision.ESCALATE`) routed
+  low-confidence determinations, unresolved contradictions, ambiguous visa
+  types, and any high-stakes flag — unconditionally — to
+  `ConversationStatus.NEEDS_HUMAN_REVIEW`. That model assumes a staffed
+  caseworker queue. This deployment has none: no caseworker UI, no
+  notification, nothing consuming `EscalationRecord` rows — so an escalated
+  conversation was a dead end from the user's side, told "a caseworker will
+  follow up" with no caseworker who ever would.
+- **Decision.** `GateDecision` is now only `CLARIFY` or `PASS`/`FORCE_PASS`
+  (`app/workflow/gate.py`). `CLARIFY` is unchanged, bounded by
+  `MAX_CLARIFY_ROUNDS`. Once rounds are exhausted without a confident,
+  cited, uncontradicted, unambiguous result, the gate **force-passes**:
+  commits to the top candidate, and the reply
+  (`_best_effort_reply`, `app/workflow/orchestrator.py`) explicitly
+  caveats it as best-effort and surfaces known contradictions/missing info.
+  `high_stakes_flags` are still extracted and audit-logged every turn, but
+  no longer route to a different outcome. Phase 2 applies the same
+  pattern: a field that keeps failing validation is simply re-asked rather
+  than escalated after `MAX_VALIDATION_RETRIES`.
+- **Trade-off accepted.** This removes the system's highest-stakes safety
+  net — routing prior-refusal/criminal-record/asylum-adjacent cases to a
+  human before any determination — in exchange for every user getting a
+  real, usable answer instead of a queue that nothing services. Defensible
+  *only* because no human is on the other end of that queue in this
+  deployment; §5's compliance boundary was narrowed accordingly to rest on
+  the Human Review Gate over Phase 2 output, not on advisory-stage
+  escalation. A deployment that staffs a caseworker queue should restore
+  something closer to the original `ESCALATE` path for high-stakes/
+  low-confidence cases — that logic remains in git history
+  (`app/workflow/gate.py`, prior to this change).
