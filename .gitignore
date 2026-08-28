@@ -5,3 +5,4 @@ visa_agent.db
 .pytest_cache/
 .env
 .bin/
+.model_cache/

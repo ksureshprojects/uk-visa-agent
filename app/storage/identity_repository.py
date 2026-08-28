@@ -163,6 +163,10 @@ def find_or_create_user(db: DBSession, email: str) -> User:
     return user
 
 
+def get_user(db: DBSession, user_id: str) -> User | None:
+    return db.get(User, user_id)
+
+
 # --- Cases -------------------------------------------------------------
 
 
@@ -176,6 +180,11 @@ def create_case(db: DBSession, user_id: str, summary: str | None = None) -> Case
 
 def get_case(db: DBSession, case_id: str) -> Case | None:
     return db.get(Case, case_id)
+
+
+def set_case_conversation(db: DBSession, case: Case, conversation_id: str) -> None:
+    case.conversation_id = conversation_id
+    db.commit()
 
 
 def get_most_recent_case(db: DBSession, user_id: str) -> Case | None:

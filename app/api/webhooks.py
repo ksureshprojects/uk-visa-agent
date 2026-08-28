@@ -16,15 +16,13 @@ import logging
 
 from fastapi import APIRouter, Form
 
-from app.identity.session_manager import IdentitySessionManager
+from app.identity.session_manager import manager as _manager
 from app.storage.db import get_session
 from app.storage.models import ChannelType
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks/twilio", tags=["webhooks"])
-
-_manager = IdentitySessionManager()
 
 
 def _strip_whatsapp_prefix(value: str) -> str:

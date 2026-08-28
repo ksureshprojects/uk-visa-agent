@@ -174,13 +174,19 @@ class User(Base):
 
 class Case(Base):
     """One enquiry a user is pursuing, spanning any number of messages and
-    sessions. Attributed to the user's email address via user_id."""
+    sessions. Attributed to the user's email address via user_id.
+
+    conversation_id links to the visa-advisory pipeline's own Conversation
+    (app/workflow/orchestrator.py) — created lazily, the first time a case
+    goes ACTIVE and actually needs one (see
+    IdentitySessionManager._ensure_conversation)."""
 
     __tablename__ = "cases"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 

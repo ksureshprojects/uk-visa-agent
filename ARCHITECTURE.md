@@ -142,8 +142,10 @@ later — you can replay exactly what the agent saw and decided at any point.
 complete exclusively by validator functions (regex/format checks, date
 logic, cross-field consistency, document-type/recency checks) — never by the
 LLM asserting "this looks fine." The LLM's only job in Phase 2 is turning
-free text into a structured field value; if extraction is ambiguous, the
-validator rejects it and the agent re-prompts.
+free text into structured field values — up to 7 fields at once are batched
+into a single question, extracted from one reply, and validated
+independently — if extraction is ambiguous for a given field, the validator
+rejects that field and the agent re-prompts for it specifically.
 
 ## 5. Product/compliance boundary
 

@@ -1,0 +1,71 @@
+{
+  "visa_type": "Student",
+  "requirements": [
+    {
+      "name": "full_name",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the applicant's full legal name, exactly as it appears in their passport?"
+    },
+    {
+      "name": "date_of_birth",
+      "kind": "field",
+      "validator": "iso_date_in_past",
+      "prompt": "What is their date of birth? Please give it as YYYY-MM-DD."
+    },
+    {
+      "name": "nationality",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is their nationality (as shown on their passport)?"
+    },
+    {
+      "name": "passport_number",
+      "kind": "field",
+      "validator": "passport_number",
+      "prompt": "What is their passport number?"
+    },
+    {
+      "name": "cas_reference",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the Confirmation of Acceptance for Studies (CAS) reference number given by your course provider?"
+    },
+    {
+      "name": "course_provider",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the name of the licensed student sponsor (your course provider)?"
+    },
+    {
+      "name": "course_start_date",
+      "kind": "field",
+      "validator": "iso_date_in_future",
+      "prompt": "When does the course start? Please give it as YYYY-MM-DD."
+    },
+    {
+      "name": "funds_available_gbp",
+      "kind": "field",
+      "validator": "positive_number",
+      "prompt": "Roughly how much money (in GBP) do you have available to cover course fees and living costs?"
+    },
+    {
+      "name": "passport_bio_page",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have a clear copy of the passport bio-data page ready? Please confirm."
+    },
+    {
+      "name": "cas_letter",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have your CAS confirmation letter from your course provider ready? Please confirm."
+    },
+    {
+      "name": "financial_evidence",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have financial evidence ready (bank statements, loan letter, or sponsorship confirmation)? Please confirm."
+    }
+  ]
+}

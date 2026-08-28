@@ -2,14 +2,16 @@ from typing import Any
 
 from anthropic import Anthropic
 
-from app.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
+from app.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_WORKSPACE_ID
 
 from app.llm.base import LLMProvider
 
 
 class AnthropicProvider(LLMProvider):
-    def __init__(self, api_key: str | None = None, model: str | None = None):
-        self._client = Anthropic(api_key=api_key or ANTHROPIC_API_KEY)
+    def __init__(self, api_key: str | None = None, model: str | None = None, workspace_id: str | None = None):
+        workspace_id = workspace_id or ANTHROPIC_WORKSPACE_ID
+        default_headers = {"anthropic-workspace-id": workspace_id} if workspace_id else None
+        self._client = Anthropic(api_key=api_key or ANTHROPIC_API_KEY, default_headers=default_headers)
         self._model = model or ANTHROPIC_MODEL
 
     def complete(self, system: str, messages: list[dict], max_tokens: int = 1024) -> str:

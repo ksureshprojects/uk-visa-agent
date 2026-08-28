@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from app.api.webhooks import router as twilio_webhooks_router
 from app.config import BASE_DIR, GMAIL_APP_PASSWORD, GMAIL_USER, LOG_LEVEL
+from app.identity.session_manager import manager as identity_manager
 from app.kb.retrieval import KnowledgeStore
 from app.llm import get_llm_provider
 from app.messaging import email_poller
@@ -33,7 +34,9 @@ def startup() -> None:
     init_db()
     kb = KnowledgeStore()
     llm = get_llm_provider()
-    _state["orchestrator"] = Orchestrator(llm, kb)
+    orchestrator = Orchestrator(llm, kb)
+    _state["orchestrator"] = orchestrator
+    identity_manager.orchestrator = orchestrator
 
     if GMAIL_USER and GMAIL_APP_PASSWORD:
         stop_event = threading.Event()

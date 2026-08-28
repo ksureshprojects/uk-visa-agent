@@ -1,25 +1,30 @@
 from app.llm.base import LLMProvider
 
 
-class ScriptedLLM(LLMProvider):
-    """Returns queued canned answers for structured_complete, in call order.
+class BatchScriptedLLM(LLMProvider):
+    """Returns queued canned {field_name: value} dicts for structured_complete,
+    in call order — one dict per Phase 2 batch turn (app/workflow/assembly.py
+    calls structured_complete once per handle_user_message, extracting every
+    field in that turn's batch together).
 
     Lets tests drive the Phase 2 state machine deterministically without a
     real model — the point under test is the state machine's control flow
-    (validation, retries, escalation, package assembly), not extraction
-    quality.
+    (batching, conditional requirements, validation, retries, package
+    assembly), not extraction quality. Each queued dict only needs to
+    contain the fields it means to answer; fields it omits are treated as
+    unanswered (None), same as a real model returning null for them.
     """
 
-    def __init__(self, answers: list[str | None]):
-        self._answers = list(answers)
+    def __init__(self, batches: list[dict[str, str | None]]):
+        self._batches = list(batches)
 
     def complete(self, system: str, messages: list[dict], max_tokens: int = 1024) -> str:
         return ""
 
     def structured_complete(self, system, messages, tool_name, tool_description, input_schema, max_tokens=1024):
-        if not self._answers:
-            raise AssertionError("ScriptedLLM ran out of queued answers")
-        return {"value": self._answers.pop(0)}
+        if not self._batches:
+            raise AssertionError("BatchScriptedLLM ran out of queued batches")
+        return self._batches.pop(0)
 
 
 class MultiToolScriptedLLM(LLMProvider):

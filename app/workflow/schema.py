@@ -6,6 +6,9 @@ from app.config import SCHEMAS_DIR
 
 _SCHEMA_FILES = {
     "Standard Visitor": "standard_visitor.json",
+    "Skilled Worker": "skilled_worker.json",
+    "Student": "student.json",
+    "Family (Partner)": "family_partner.json",
 }
 
 

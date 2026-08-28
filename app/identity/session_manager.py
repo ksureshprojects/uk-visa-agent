@@ -1,11 +1,24 @@
 """State machine driving identity verification and case selection for
 inbound channel messages (WhatsApp or email).
 
-This is intentionally decoupled from app/workflow/orchestrator.py's visa
-advisory pipeline: this module owns *who is talking* (email-OTP verified
-identity) and *which case they mean*, before a message would ever reach
-the advisory agent. Wiring a verified, case-attributed message into that
-pipeline is a follow-up, not part of this slice.
+This module owns *who is talking* (email-OTP verified identity) and *which
+case they mean*; once a case is ACTIVE, every further message on it is
+handed to app/workflow/orchestrator.py's visa advisory pipeline
+(_handle_active), which owns the actual advice. Each Case lazily gets its
+own Conversation the first time it goes ACTIVE (Case.conversation_id).
+
+The transition into ACTIVE (_activate_case) also hands over
+session.initial_message — the free-form message that started the session,
+e.g. "I want to apply for a student visa" — as that Conversation's first
+turn. So the moment a case is determined, the reply is the advisory
+pipeline's actual answer to what the user already said, not a generic "how
+can I help?".
+
+Whenever the advisory pipeline's response includes a completed Phase 2
+"package" (app/workflow/assembly.py's build_package output), this module
+also emails the user a plain-text field-value summary + document checklist
+(_send_package_summary_email) — always via email, even on a WhatsApp
+session, since that's the one address every user has already verified.
 
 One state machine step per inbound message, driven by UserSession.state.
 
@@ -18,11 +31,13 @@ since a phone number alone doesn't identify who's messaging:
     AWAITING_OTP --[expired/locked]--> AWAITING_EMAIL
     AWAITING_CASE_CHOICE --["new"]--> ACTIVE (new case created)
     AWAITING_CASE_CHOICE --["existing", case found]--> AWAITING_EXISTING_CASE_CONFIRM
-    AWAITING_CASE_CHOICE --["existing", none found]--> AWAITING_CASE_REFERENCE
+    AWAITING_CASE_CHOICE --["existing", none found]--> ACTIVE (new case created)
     AWAITING_EXISTING_CASE_CONFIRM --["yes"]--> ACTIVE
     AWAITING_EXISTING_CASE_CONFIRM --["no"]--> AWAITING_CASE_REFERENCE
     AWAITING_CASE_REFERENCE --[known case id]--> ACTIVE
-    ACTIVE --[any message]--> ACTIVE (logged against the case)
+    AWAITING_CASE_REFERENCE --["new"]--> ACTIVE (new case created)
+    ACTIVE --["new", current case already complete]--> ACTIVE (new case created)
+    ACTIVE --[any other message]--> ACTIVE (logged against the current case)
 
 Email sessions skip identity verification entirely — the sender's From
 address already proves they control that inbox, which is the same proof an
@@ -40,9 +55,12 @@ import re
 
 from sqlalchemy.orm import Session as DBSession
 
-from app.messaging import gmail, twilio_client
+from app.identity import case_locks
+from app.messaging import gmail, package_summary, twilio_client
 from app.storage import identity_repository as repo
-from app.storage.models import ChannelType, MessageDirection, SessionState, User, UserSession
+from app.storage import repository as workflow_repository
+from app.storage.models import ChannelType, ConversationStatus, MessageDirection, SessionState, User, UserSession
+from app.workflow.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +81,14 @@ class IdentitySessionManager:
     takes a raw (channel_type, channel_identifier, text) triple, advances
     the session state machine by one step, and sends + logs the reply
     itself so callers don't need to know how a given channel is dispatched.
+
+    `orchestrator` is None at import time (the LLM/KB-backed Orchestrator
+    can't be built until app startup) and is set once by
+    app/api/main.py:startup() on the shared `manager` instance below.
     """
+
+    def __init__(self, orchestrator: Orchestrator | None = None):
+        self.orchestrator = orchestrator
 
     def handle_inbound_message(
         self, db: DBSession, channel_type: ChannelType, channel_identifier: str, text: str
@@ -80,21 +105,37 @@ class IdentitySessionManager:
             channel_type, channel_identifier, text,
         )
 
-        if is_new:
-            repo.set_initial_message(db, session, text)
-            if channel_type == ChannelType.EMAIL:
-                reply = self._start_email_session(db, session)
-            else:
-                reply = (
-                    "Welcome! Before we get started, could you tell me the email address "
-                    "you'd like to use to verify your identity?"
-                )
+        # A session already tied to a case could be advanced from either
+        # channel at the same moment (e.g. the email poller's background
+        # thread and a WhatsApp webhook thread both landing on the same
+        # case) — serialize the turn per case_id so the same case is never
+        # processed by two threads at once. Sessions not yet tied to a case
+        # (still in identity verification / case selection) aren't touching
+        # shared case state, so they proceed without a lock; different
+        # cases each get their own lock and still run fully in parallel.
+        lock = case_locks.lock_for_case(session.case_id) if session.case_id else None
+        if lock is not None:
+            with lock:
+                reply = self._generate_reply(db, session, channel_type, is_new, text)
         else:
-            reply = self._advance(db, session, text.strip())
+            reply = self._generate_reply(db, session, channel_type, is_new, text)
 
         self._reply(db, session, reply)
         logger.info("session=%s state=%s: outbound %r", session.id, session.state.value, reply)
         return {"session_id": session.id, "state": session.state.value, "reply": reply}
+
+    def _generate_reply(
+        self, db: DBSession, session: UserSession, channel_type: ChannelType, is_new: bool, text: str
+    ) -> str:
+        if is_new:
+            repo.set_initial_message(db, session, text)
+            if channel_type == ChannelType.EMAIL:
+                return self._start_email_session(db, session)
+            return (
+                "Welcome! Before we get started, could you tell me the email address "
+                "you'd like to use to verify your identity?"
+            )
+        return self._advance(db, session, text.strip())
 
     def _advance(self, db: DBSession, session: UserSession, text: str) -> str:
         handler = getattr(self, f"_handle_{session.state.value}", None)
@@ -121,16 +162,11 @@ class IdentitySessionManager:
 
         if not cases:
             case = repo.create_case(db, user.id, summary=session.initial_message)
-            repo.link_case(db, session, case.id)
-            repo.set_state(db, session, SessionState.ACTIVE)
-            logger.info(
-                "session=%s user=%s: no existing cases, created case=%s, state -> ACTIVE",
-                session.id, user.id, case.id,
-            )
-            return (
+            ack = (
                 f"Thanks — I couldn't find any existing cases for your email address, "
-                f"so I've started a new one: {case.id}. How can I help with it?"
+                f"so I've started a new one: {case.id}."
             )
+            return self._activate_case(db, session, case.id, ack)
 
         repo.set_pending_case_choices(db, session, [case.id for case in cases])
         repo.set_state(db, session, SessionState.AWAITING_CASE_SELECTION)
@@ -198,25 +234,19 @@ class IdentitySessionManager:
     def _handle_awaiting_case_choice(self, db: DBSession, session: UserSession, text: str) -> str:
         if _matches_any(text, _NEW_CASE_WORDS):
             case = repo.create_case(db, session.user_id, summary=session.initial_message)
-            repo.link_case(db, session, case.id)
-            repo.set_state(db, session, SessionState.ACTIVE)
-            logger.info(
-                "session=%s user=%s: created case=%s, state -> ACTIVE",
-                session.id, session.user_id, case.id,
-            )
-            return f"Started new case {case.id}. How can I help with it?"
+            return self._activate_case(db, session, case.id, f"Started new case {case.id}.")
 
         if _matches_any(text, _EXISTING_CASE_WORDS):
             recent = repo.get_most_recent_case(db, session.user_id)
             if recent is None:
-                repo.set_state(db, session, SessionState.AWAITING_CASE_REFERENCE)
+                case = repo.create_case(db, session.user_id, summary=session.initial_message)
                 logger.info(
-                    "session=%s user=%s: no existing cases found, state -> AWAITING_CASE_REFERENCE",
-                    session.id, session.user_id,
+                    "session=%s user=%s: no existing cases found, starting new case=%s",
+                    session.id, session.user_id, case.id,
                 )
-                return (
-                    "I couldn't find any existing cases for you. Could you provide the "
-                    "case reference id you'd like to continue?"
+                return self._activate_case(
+                    db, session, case.id,
+                    f"I couldn't find any existing cases for you, so I've started a new one: {case.id}.",
                 )
             repo.set_pending_case(db, session, recent.id)
             repo.set_state(db, session, SessionState.AWAITING_EXISTING_CASE_CONFIRM)
@@ -239,15 +269,9 @@ class IdentitySessionManager:
         self, db: DBSession, session: UserSession, text: str
     ) -> str:
         if _matches_any(text, _YES_WORDS):
-            repo.link_case(db, session, session.pending_case_id)
             case_id = session.pending_case_id
             repo.set_pending_case(db, session, None)
-            repo.set_state(db, session, SessionState.ACTIVE)
-            logger.info(
-                "session=%s user=%s: confirmed case=%s, state -> ACTIVE",
-                session.id, session.user_id, case_id,
-            )
-            return f"Great, continuing case {case_id}. How can I help?"
+            return self._activate_case(db, session, case_id, f"Great, continuing case {case_id}.")
 
         if _matches_any(text, _NO_WORDS):
             repo.set_pending_case(db, session, None)
@@ -261,6 +285,10 @@ class IdentitySessionManager:
         return "Sorry, could you confirm with yes or no — is that the right case?"
 
     def _handle_awaiting_case_reference(self, db: DBSession, session: UserSession, text: str) -> str:
+        if _matches_any(text, _NEW_CASE_WORDS):
+            case = repo.create_case(db, session.user_id, summary=session.initial_message)
+            return self._activate_case(db, session, case.id, f"Started new case {case.id}.")
+
         case_id = text.strip()
         case = repo.get_case(db, case_id)
         if case is None or case.user_id != session.user_id:
@@ -272,13 +300,7 @@ class IdentitySessionManager:
                 "I couldn't find a case with that reference id for your account. "
                 "Could you check and send it again?"
             )
-        repo.link_case(db, session, case.id)
-        repo.set_state(db, session, SessionState.ACTIVE)
-        logger.info(
-            "session=%s user=%s: linked case=%s, state -> ACTIVE",
-            session.id, session.user_id, case.id,
-        )
-        return f"Thanks, continuing case {case.id}. How can I help?"
+        return self._activate_case(db, session, case.id, f"Thanks, continuing case {case.id}.")
 
     def _handle_awaiting_case_selection(self, db: DBSession, session: UserSession, text: str) -> str:
         choice_ids = [c for c in (session.pending_case_ids or "").split(",") if c]
@@ -312,22 +334,132 @@ class IdentitySessionManager:
             )
             return "Sorry, something went wrong finding that case. Could you try again?"
 
-        repo.link_case(db, session, case.id)
         repo.set_pending_case_choices(db, session, [])
-        repo.set_state(db, session, SessionState.ACTIVE)
-        logger.info(
-            "session=%s user=%s: selected case=%s, state -> ACTIVE",
-            session.id, session.user_id, case.id,
-        )
-        return f"Great, continuing case {case.id}. How can I help?"
+        return self._activate_case(db, session, case.id, f"Great, continuing case {case.id}.")
 
     def _handle_active(self, db: DBSession, session: UserSession, text: str) -> str:
-        repo.touch_case(db, session.case_id, summary=text)
-        logger.info(
-            "session=%s user=%s case=%s: message logged against active case",
-            session.id, session.user_id, session.case_id,
+        if self.orchestrator is None:
+            logger.error(
+                "session=%s user=%s case=%s: orchestrator not wired yet, cannot route to advisory agent",
+                session.id, session.user_id, session.case_id,
+            )
+            return "Sorry, the assistant isn't ready yet — please try again in a moment."
+
+        # Only treat "new" as a start-a-new-case command once the current
+        # case is actually finished — otherwise a mid-conversation message
+        # that happens to contain "new" (e.g. "I have a new employer") would
+        # hijack an in-progress case instead of being answered normally.
+        if _matches_any(text, _NEW_CASE_WORDS) and self._case_is_complete(db, session.case_id):
+            return self._start_new_case(db, session, text)
+
+        result = self._route_to_advisory(db, session, session.case_id, text)
+        return result["reply_to_user"]
+
+    def _case_is_complete(self, db: DBSession, case_id: str) -> bool:
+        case = repo.get_case(db, case_id)
+        if case is None or case.conversation_id is None:
+            return False
+        convo = workflow_repository.get_conversation(db, case.conversation_id)
+        return convo is not None and convo.status in (
+            ConversationStatus.READY_FOR_HUMAN_REVIEW, ConversationStatus.COMPLETED,
         )
-        return "Got it — I've logged your message on this case. We'll follow up shortly."
+
+    def _start_new_case(self, db: DBSession, session: UserSession, text: str) -> str:
+        case = repo.create_case(db, session.user_id, summary=text)
+        repo.link_case(db, session, case.id)
+        logger.info(
+            "session=%s user=%s: previous case=%s complete, started new case=%s",
+            session.id, session.user_id, session.case_id, case.id,
+        )
+        result = self._route_to_advisory(db, session, case.id, text)
+        return f"Started new case {case.id}.\n\n{result['reply_to_user']}"
+
+    def _activate_case(self, db: DBSession, session: UserSession, case_id: str, ack: str) -> str:
+        """Move `session` onto `case_id` and, instead of a bare "how can I
+        help" prompt, hand the message that started this session straight to
+        the advisory pipeline — so e.g. "I want to apply for a student visa"
+        sent as the very first message is acted on immediately rather than
+        asked for again. Only session.initial_message is used, not every
+        inbound message logged this session: verification-flow replies
+        (email address, OTP code, new/existing/yes-no keywords) are
+        state-machine answers, not advisory content, and feeding them to the
+        LLM would just be noise (and put a one-time OTP code in the audit
+        log for no reason)."""
+        repo.link_case(db, session, case_id)
+        repo.set_state(db, session, SessionState.ACTIVE)
+        logger.info("session=%s user=%s: activated case=%s", session.id, session.user_id, case_id)
+
+        if self.orchestrator is None:
+            logger.error(
+                "session=%s user=%s case=%s: orchestrator not wired yet, cannot route to advisory agent",
+                session.id, session.user_id, case_id,
+            )
+            return f"{ack} Sorry, the assistant isn't ready yet — please try again in a moment."
+
+        result = self._route_to_advisory(db, session, case_id, session.initial_message)
+        return f"{ack}\n\n{result['reply_to_user']}"
+
+    def _route_to_advisory(self, db: DBSession, session: UserSession, case_id: str, text: str) -> dict:
+        conversation_id = self._ensure_conversation(db, session)
+        result = self.orchestrator.handle_message(db, conversation_id, text)
+        repo.touch_case(db, case_id, summary=text)
+        logger.info(
+            "session=%s user=%s case=%s conversation=%s: routed to advisory agent, status=%s",
+            session.id, session.user_id, case_id, conversation_id, result.get("status"),
+        )
+        if result.get("package") is not None:
+            emailed_to = self._send_package_summary_email(db, session, case_id, result["package"])
+            if emailed_to:
+                result["reply_to_user"] += f"\n\nI've also emailed the full package details to {emailed_to}."
+        return result
+
+    def _send_package_summary_email(
+        self, db: DBSession, session: UserSession, case_id: str, package: dict
+    ) -> str | None:
+        """Returns the address emailed on success, None otherwise (so the
+        caller can only tell the user about the email if it actually sent)."""
+        user = repo.get_user(db, session.user_id)
+        if user is None:
+            logger.error(
+                "session=%s case=%s: no user linked to session, cannot email package summary",
+                session.id, case_id,
+            )
+            return None
+
+        subject, body = package_summary.format_package_email(case_id, package)
+        try:
+            gmail.send_email(to=user.email, subject=subject, body=body)
+        except Exception:
+            # Best-effort: this is a supplementary notification alongside the
+            # primary reply already sent via _reply, not the turn's main
+            # deliverable — a failure here shouldn't fail the whole turn.
+            logger.exception(
+                "session=%s case=%s: failed to email package summary to %s",
+                session.id, case_id, user.email,
+            )
+            return None
+
+        repo.log_message(
+            db, session.id, case_id, MessageDirection.OUTBOUND,
+            ChannelType.EMAIL, user.email, body,
+        )
+        logger.info(
+            "session=%s case=%s: emailed package summary to %s", session.id, case_id, user.email,
+        )
+        return user.email
+
+    def _ensure_conversation(self, db: DBSession, session: UserSession) -> str:
+        case = repo.get_case(db, session.case_id)
+        if case.conversation_id is not None:
+            return case.conversation_id
+
+        convo = self.orchestrator.start_conversation(db, external_user_id=session.user_id)
+        repo.set_case_conversation(db, case, convo.id)
+        logger.info(
+            "session=%s user=%s case=%s: created conversation=%s",
+            session.id, session.user_id, session.case_id, convo.id,
+        )
+        return convo.id
 
     # --- outbound dispatch ---------------------------------------------------
 
@@ -352,3 +484,9 @@ class IdentitySessionManager:
             db, session.id, session.case_id, MessageDirection.OUTBOUND,
             session.channel_type, session.channel_identifier, text,
         )
+
+
+# Single shared instance — both app/api/webhooks.py and
+# app/messaging/email_poller.py use this one, so app/api/main.py's
+# startup() only has to wire up `orchestrator` in one place.
+manager = IdentitySessionManager()

@@ -42,7 +42,7 @@ def send_email(to: str, subject: str, body: str) -> None:
     logger.info("Email sent to %s (subject=%r)", to, subject)
 
 
-def fetch_unread() -> list[dict[str, Any]]:
+def fetch_unread(text_filter_terms: list[str] | None = None) -> list[dict[str, Any]]:
     """Return unread inbox messages as a list of
     {"uid": bytes, "from": "sender@example.com", "subject": str, "body": str}.
 
@@ -50,13 +50,27 @@ def fetch_unread() -> list[dict[str, Any]]:
     read as a side effect of looking at them — callers should call
     mark_read(uid) themselves once a message has been successfully processed,
     so a failure can be retried on the next poll.
+
+    text_filter_terms, if given, narrows the UNSEEN search server-side with
+    an IMAP TEXT search per term (ANDed together, matching subject or body)
+    before any message body is downloaded. This is a coarse, best-effort
+    pre-filter only — a mailbox can have hundreds of UNSEEN messages
+    (newsletters etc.) that have nothing to do with what the caller wants,
+    and fetching every one's full body first is what makes a poll cycle
+    take minutes instead of seconds. Callers that need exact matching
+    (e.g. whole-word regex) should still re-check the messages returned
+    here themselves — Gmail's TEXT search isn't guaranteed to have
+    identical semantics.
     """
     messages: list[dict[str, Any]] = []
     with imaplib.IMAP4_SSL(IMAP_HOST) as imap:
         imap.login(GMAIL_USER, GMAIL_APP_PASSWORD)
         imap.select("INBOX")
 
-        _, uids = imap.search(None, "UNSEEN")
+        criteria = ["UNSEEN"]
+        for term in text_filter_terms or []:
+            criteria += ["TEXT", term]
+        _, uids = imap.search(None, *criteria)
         for uid in uids[0].split():
             _, msg_data = imap.fetch(uid, "(BODY.PEEK[])")
             raw_email = msg_data[0][1]

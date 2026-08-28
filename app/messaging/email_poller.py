@@ -14,21 +14,24 @@ import re
 import threading
 
 from app.config import EMAIL_POLL_INTERVAL_SECONDS, GMAIL_APP_PASSWORD, GMAIL_USER
-from app.identity.session_manager import IdentitySessionManager
+from app.identity.session_manager import manager as _manager
 from app.messaging import gmail
 from app.storage.db import get_session, init_db
 from app.storage.models import ChannelType
 
 logger = logging.getLogger(__name__)
 
-_manager = IdentitySessionManager()
-
 # The inbox this polls is a real mailbox, not a dedicated agent address, so
 # most unread mail (newsletters, notifications, spam) is not a case enquiry
 # at all. Only treat a message as one if both words appear somewhere in the
 # subject or body — a cheap guard against auto-replying to unrelated mail.
+# The same two words are passed to gmail.fetch_unread() as a server-side
+# pre-filter (see its docstring) so a mailbox with a large UNSEEN backlog
+# doesn't have every message's full body downloaded just to be discarded
+# here — but this regex check (exact, whole-word) stays the actual gate.
 _UK_RE = re.compile(r"\buk\b", re.IGNORECASE)
 _VISA_RE = re.compile(r"\bvisa\b", re.IGNORECASE)
+_TEXT_FILTER_TERMS = ["uk", "visa"]
 
 
 def _looks_like_visa_enquiry(message: dict) -> bool:
@@ -39,7 +42,7 @@ def _looks_like_visa_enquiry(message: dict) -> bool:
 def poll_once() -> int:
     """Fetch all currently-unread messages and process the ones that look
     like UK visa enquiries. Returns the count processed."""
-    messages = gmail.fetch_unread()
+    messages = gmail.fetch_unread(text_filter_terms=_TEXT_FILTER_TERMS)
     processed = 0
     for message in messages:
         if not _looks_like_visa_enquiry(message):
