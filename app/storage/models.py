@@ -125,3 +125,132 @@ class EscalationRecord(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
     conversation: Mapped[Conversation] = relationship(back_populates="escalations")
+
+
+# --- Identity verification & case management -----------------------------
+#
+# A separate model group from Conversation/Message above: those model the
+# visa-advisory pipeline's own turn-by-turn state, while the models below
+# model *who is messaging and which case they mean*, across whichever
+# channel (WhatsApp or email) they used. A UserSession owns that
+# channel-facing state machine (identity verification, then case
+# selection); once a case is chosen, ChannelMessage is the append-only,
+# per-message record of what was sent/received and over which channel.
+
+
+class ChannelType(str, enum.Enum):
+    EMAIL = "email"
+    WHATSAPP = "whatsapp"
+
+
+class SessionState(str, enum.Enum):
+    AWAITING_EMAIL = "awaiting_email"
+    AWAITING_OTP = "awaiting_otp"
+    AWAITING_CASE_CHOICE = "awaiting_case_choice"
+    AWAITING_EXISTING_CASE_CONFIRM = "awaiting_existing_case_confirm"
+    AWAITING_CASE_REFERENCE = "awaiting_case_reference"
+    AWAITING_CASE_SELECTION = "awaiting_case_selection"
+    ACTIVE = "active"
+
+
+class MessageDirection(str, enum.Enum):
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+
+
+class User(Base):
+    """A person, identified solely by their (OTP-verified) email address —
+    regardless of which channel(s) they message through."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+    cases: Mapped[list["Case"]] = relationship(back_populates="user")
+    sessions: Mapped[list["UserSession"]] = relationship(back_populates="user")
+
+
+class Case(Base):
+    """One enquiry a user is pursuing, spanning any number of messages and
+    sessions. Attributed to the user's email address via user_id.
+
+    conversation_id links to the visa-advisory pipeline's own Conversation
+    (app/workflow/orchestrator.py) — created lazily, the first time a case
+    goes ACTIVE and actually needs one (see
+    IdentitySessionManager._ensure_conversation)."""
+
+    __tablename__ = "cases"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+    user: Mapped[User] = relationship(back_populates="cases")
+    messages: Mapped[list["ChannelMessage"]] = relationship(
+        back_populates="case", foreign_keys="ChannelMessage.case_id"
+    )
+
+
+class UserSession(Base):
+    """One interaction window for a channel identifier (a phone number or
+    email address), from a user's first inbound message until 30 minutes of
+    inactivity (SESSION_IDLE_TIMEOUT_MINUTES). Owns email+OTP identity
+    verification and case selection before messages get attributed to a
+    Case; `initial_message` caches the message that started the session so
+    it can be acknowledged once verification completes."""
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    channel_type: Mapped[ChannelType] = mapped_column(Enum(ChannelType))
+    channel_identifier: Mapped[str] = mapped_column(String, index=True)
+    state: Mapped[SessionState] = mapped_column(Enum(SessionState), default=SessionState.AWAITING_EMAIL)
+
+    initial_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    pending_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    otp_code_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    otp_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    otp_attempts: Mapped[int] = mapped_column(default=0)
+
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    pending_case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id"), nullable=True)
+    # Comma-separated case ids, in the order they were presented, for the
+    # AWAITING_CASE_SELECTION state (email channel: pick one of up to 5).
+    pending_case_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id"), nullable=True, index=True)
+
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+    last_activity_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, index=True)
+
+    user: Mapped[User | None] = relationship(back_populates="sessions", foreign_keys=[user_id])
+    messages: Mapped[list["ChannelMessage"]] = relationship(
+        back_populates="session", foreign_keys="ChannelMessage.session_id"
+    )
+
+
+class ChannelMessage(Base):
+    """Append-only log of every inbound/outbound message across channels —
+    identity-verification exchanges (case_id null) as well as case
+    messages. channel_type/channel_identifier are recorded per-message
+    rather than only per-session, since the channel a verification code is
+    sent to (always email) can differ from the session's own channel."""
+
+    __tablename__ = "channel_messages"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(ForeignKey("user_sessions.id"), index=True)
+    case_id: Mapped[str | None] = mapped_column(ForeignKey("cases.id"), nullable=True, index=True)
+    direction: Mapped[MessageDirection] = mapped_column(Enum(MessageDirection))
+    channel_type: Mapped[ChannelType] = mapped_column(Enum(ChannelType))
+    channel_identifier: Mapped[str] = mapped_column(String)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
+
+    session: Mapped[UserSession] = relationship(back_populates="messages", foreign_keys=[session_id])
+    case: Mapped[Case | None] = relationship(back_populates="messages", foreign_keys=[case_id])

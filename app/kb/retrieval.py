@@ -18,7 +18,7 @@ class KnowledgeStore:
     def __init__(self, kb_dir=None):
         self.chunks: list[KBChunk] = load_chunks(kb_dir)
         self.version: str = kb_version(self.chunks)
-        self._vectorizer = Vectorizer([c.text for c in self.chunks])
+        self._vectorizer = Vectorizer()
         self._matrix = self._vectorizer.transform_batch([c.text for c in self.chunks])
 
     def retrieve(self, query: str, top_k: int = RETRIEVAL_TOP_K) -> list[RetrievedChunk]:

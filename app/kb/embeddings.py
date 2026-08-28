@@ -1,66 +1,40 @@
-"""Local TF-IDF vectorization for retrieval.
+"""Local sentence-embedding vectorization for retrieval, via fastembed.
 
-No embedding API dependency: for a small, curated corpus (a few dozen
-chunks), TF-IDF cosine similarity retrieves relevant rule text reliably and
-keeps the demo runnable offline / without extra API keys. Swapping in a
-hosted embedding model later is a drop-in change behind `Vectorizer`.
+Runs a small quantized transformer fully on-device (onnxruntime, not
+PyTorch) — no API key and no network calls at inference time, only a
+one-off model download that's then cached to disk. This ranks chunks by
+semantic similarity rather than literal word overlap, so colloquial or
+synonymous phrasing (e.g. "my girlfriend" vs. the KB's "partner") still
+retrieves the right chunk. Swapping the model is a one-line change to
+_MODEL_NAME.
 """
 
-import math
-import re
-from collections import Counter
+from functools import lru_cache
 
 import numpy as np
+from fastembed import TextEmbedding
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+from app.config import EMBEDDING_MODEL_CACHE_DIR
 
-# A small, curated corpus makes IDF alone a weak discriminator: generic
-# high-frequency words (uk, visa, visit...) still dominate cosine similarity
-# unless filtered outright. Stopwords removed at tokenize time, not scored
-# down, so distinctive terms (money, bank, refusal...) drive ranking.
-_STOPWORDS = frozenset(
-    """
-    a an the this that these those and or but if then than so as of to in on
-    at by for with without from into onto up down out over under again
-    further once here there when where why how all any both each few more
-    most other some such no nor not only own same too very s t can will just
-    don should now is are was were be been being have has had do does did
-    doing would could shall might must i you he she it we they me him her
-    us them my your his its our their what which who whom
-    """.split()
-)
+_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
 
-def tokenize(text: str) -> list[str]:
-    return [t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOPWORDS]
+@lru_cache(maxsize=1)
+def _model() -> TextEmbedding:
+    return TextEmbedding(model_name=_MODEL_NAME, cache_dir=str(EMBEDDING_MODEL_CACHE_DIR))
 
 
 class Vectorizer:
-    def __init__(self, documents: list[str]):
-        self._doc_freq: Counter[str] = Counter()
-        tokenized = [tokenize(doc) for doc in documents]
-        for tokens in tokenized:
-            for term in set(tokens):
-                self._doc_freq[term] += 1
-        self._n_docs = len(documents)
-        self._vocab = {term: i for i, term in enumerate(sorted(self._doc_freq))}
-        self._idf = np.zeros(len(self._vocab))
-        for term, idx in self._vocab.items():
-            self._idf[idx] = math.log((1 + self._n_docs) / (1 + self._doc_freq[term])) + 1
-
     def transform(self, text: str) -> np.ndarray:
-        vec = np.zeros(len(self._vocab))
-        counts = Counter(tokenize(text))
-        for term, count in counts.items():
-            idx = self._vocab.get(term)
-            if idx is not None:
-                vec[idx] = count * self._idf[idx]
-        norm = np.linalg.norm(vec)
-        return vec / norm if norm > 0 else vec
+        """Embed a query. BGE models are trained asymmetrically: queries
+        need the retrieval-instruction prefix that query_embed applies;
+        passages (transform_batch) are embedded plain."""
+        return next(_model().query_embed([text]))
 
     def transform_batch(self, texts: list[str]) -> np.ndarray:
-        return np.vstack([self.transform(t) for t in texts])
+        return np.array(list(_model().embed(texts)))
 
 
 def cosine_similarity(query_vec: np.ndarray, matrix: np.ndarray) -> np.ndarray:
+    # BGE embeddings are L2-normalized, so the dot product is already cosine similarity.
     return matrix @ query_vec

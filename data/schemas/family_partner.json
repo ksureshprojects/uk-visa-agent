@@ -1,0 +1,83 @@
+{
+  "visa_type": "Family (Partner)",
+  "requirements": [
+    {
+      "name": "applicant_full_name",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the applicant's full legal name, exactly as it appears in their passport?"
+    },
+    {
+      "name": "applicant_date_of_birth",
+      "kind": "field",
+      "validator": "iso_date_in_past",
+      "prompt": "What is the applicant's date of birth? Please give it as YYYY-MM-DD."
+    },
+    {
+      "name": "applicant_nationality",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the applicant's nationality (as shown on their passport)?"
+    },
+    {
+      "name": "applicant_passport_number",
+      "kind": "field",
+      "validator": "passport_number",
+      "prompt": "What is the applicant's passport number?"
+    },
+    {
+      "name": "sponsor_full_name",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the full name of the UK-based partner (the sponsor)?"
+    },
+    {
+      "name": "sponsor_status",
+      "kind": "field",
+      "validator": "enum_value",
+      "validator_args": {
+        "options": ["british_citizen", "irish_citizen", "settled_status", "pre_settled_status", "refugee_status"]
+      },
+      "prompt": "What is the sponsor's immigration status? (British citizen, Irish citizen, settled status/ILR, pre-settled status, or refugee/humanitarian protection status)"
+    },
+    {
+      "name": "relationship_type",
+      "kind": "field",
+      "validator": "enum_value",
+      "validator_args": {
+        "options": ["married", "civil_partnership", "cohabiting_2_years", "fiance_fiancee", "long_distance_2_years"]
+      },
+      "prompt": "What is your relationship to the sponsor? (married, civil partnership, living together 2+ years, engaged/fiancé(e), or a long-distance relationship of 2+ years)"
+    },
+    {
+      "name": "combined_annual_income_gbp",
+      "kind": "field",
+      "validator": "positive_number",
+      "prompt": "What is your combined annual income with your partner, in GBP?"
+    },
+    {
+      "name": "applicant_passport_bio_page",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have a clear copy of the applicant's passport bio-data page ready? Please confirm."
+    },
+    {
+      "name": "sponsor_immigration_status_evidence",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have evidence of the sponsor's immigration status ready (eVisa share code or BRP)? Please confirm."
+    },
+    {
+      "name": "relationship_evidence",
+      "kind": "document",
+      "validator": "min_length_20",
+      "prompt": "Briefly describe the evidence you have of your relationship and living arrangements (e.g. joint bills, tenancy agreement, correspondence over time)."
+    },
+    {
+      "name": "financial_evidence",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have financial evidence ready (payslips, bank statements, or an employer letter)? Please confirm."
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "visa_type": "Skilled Worker",
+  "requirements": [
+    {
+      "name": "full_name",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the applicant's full legal name, exactly as it appears in their passport?"
+    },
+    {
+      "name": "date_of_birth",
+      "kind": "field",
+      "validator": "iso_date_in_past",
+      "prompt": "What is their date of birth? Please give it as YYYY-MM-DD."
+    },
+    {
+      "name": "nationality",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is their nationality (as shown on their passport)?"
+    },
+    {
+      "name": "passport_number",
+      "kind": "field",
+      "validator": "passport_number",
+      "prompt": "What is their passport number?"
+    },
+    {
+      "name": "certificate_of_sponsorship_ref",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the certificate of sponsorship (CoS) reference number your employer gave you?"
+    },
+    {
+      "name": "employer_name",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the name of the sponsoring employer?"
+    },
+    {
+      "name": "sponsor_licence_number",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the employer's sponsor licence number?"
+    },
+    {
+      "name": "job_title",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the job title of the role you've been sponsored for?"
+    },
+    {
+      "name": "occupation_code",
+      "kind": "field",
+      "validator": "non_empty",
+      "prompt": "What is the occupation code for this role, as stated on the certificate of sponsorship?"
+    },
+    {
+      "name": "annual_salary_gbp",
+      "kind": "field",
+      "validator": "positive_number",
+      "prompt": "What is the annual salary offered for this role, in GBP?"
+    },
+    {
+      "name": "passport_bio_page",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have a clear copy of the passport bio-data page ready? Please confirm."
+    },
+    {
+      "name": "english_language_evidence",
+      "kind": "document",
+      "validator": "non_empty",
+      "prompt": "Do you have evidence of your knowledge of English ready (e.g. a qualifying degree, SELT certificate, or nationality exemption)? Please confirm."
+    }
+  ]
+}

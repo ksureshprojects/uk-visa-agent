@@ -1,4 +1,5 @@
 from app.agents.models import CandidateVisaType, VisaAssessment
+from app.config import MAX_CLARIFY_ROUNDS
 from app.workflow.gate import GateDecision, evaluate_checkpoint
 
 CONFIDENT_VISITOR = VisaAssessment(
@@ -15,38 +16,49 @@ def test_confident_cited_assessment_passes():
     assert decision == GateDecision.PASS
 
 
-def test_high_stakes_flag_always_escalates_even_at_high_confidence():
+def test_high_stakes_flag_does_not_block_pass_decision():
+    # There's no human caseworker to hand high-stakes cases to in this
+    # deployment, so the gate itself no longer special-cases them — the
+    # flag is still recorded (audit log + advisory system prompt), but it
+    # doesn't change PASS/CLARIFY/FORCE_PASS routing.
     assessment = CONFIDENT_VISITOR.model_copy(update={"high_stakes_flags": ["prior_refusal"]})
     decision, reason = evaluate_checkpoint(assessment, clarify_rounds_used=0)
-    assert decision == GateDecision.ESCALATE
-    assert "prior_refusal" in reason
+    assert decision == GateDecision.PASS
 
 
-def test_contradiction_escalates():
+def test_contradiction_clarifies_before_max_rounds():
     assessment = CONFIDENT_VISITOR.model_copy(update={"contradictions": ["dates of travel conflict"]})
-    decision, _ = evaluate_checkpoint(assessment, clarify_rounds_used=0)
-    assert decision == GateDecision.ESCALATE
+    decision, reason = evaluate_checkpoint(assessment, clarify_rounds_used=0)
+    assert decision == GateDecision.CLARIFY
+    assert "dates of travel conflict" in reason
+
+
+def test_contradiction_force_passes_after_max_rounds_instead_of_escalating():
+    assessment = CONFIDENT_VISITOR.model_copy(update={"contradictions": ["dates of travel conflict"]})
+    decision, _ = evaluate_checkpoint(assessment, clarify_rounds_used=MAX_CLARIFY_ROUNDS)
+    assert decision == GateDecision.FORCE_PASS
 
 
 def test_low_confidence_asks_to_clarify_before_max_rounds():
     assessment = CONFIDENT_VISITOR.model_copy(update={"confidence": 0.4, "ready_for_determination": False})
-    decision, _ = evaluate_checkpoint(assessment, clarify_rounds_used=1)
+    decision, _ = evaluate_checkpoint(assessment, clarify_rounds_used=0)
     assert decision == GateDecision.CLARIFY
 
 
-def test_low_confidence_escalates_after_max_rounds():
+def test_low_confidence_force_passes_after_max_rounds_instead_of_escalating():
     assessment = CONFIDENT_VISITOR.model_copy(update={"confidence": 0.4, "ready_for_determination": False})
-    decision, _ = evaluate_checkpoint(assessment, clarify_rounds_used=3)
-    assert decision == GateDecision.ESCALATE
+    decision, reason = evaluate_checkpoint(assessment, clarify_rounds_used=MAX_CLARIFY_ROUNDS)
+    assert decision == GateDecision.FORCE_PASS
+    assert "best-effort" in reason
 
 
 def test_missing_citations_blocks_pass_even_if_confident():
     assessment = CONFIDENT_VISITOR.model_copy(update={"citations": []})
-    decision, _ = evaluate_checkpoint(assessment, clarify_rounds_used=1)
+    decision, _ = evaluate_checkpoint(assessment, clarify_rounds_used=0)
     assert decision == GateDecision.CLARIFY
 
 
-def test_ambiguous_close_candidates_clarify_then_escalate():
+def test_ambiguous_close_candidates_clarify_then_force_pass():
     ambiguous = CONFIDENT_VISITOR.model_copy(
         update={
             "candidate_visa_types": [
@@ -55,8 +67,8 @@ def test_ambiguous_close_candidates_clarify_then_escalate():
             ]
         }
     )
-    decision, _ = evaluate_checkpoint(ambiguous, clarify_rounds_used=1)
+    decision, _ = evaluate_checkpoint(ambiguous, clarify_rounds_used=0)
     assert decision == GateDecision.CLARIFY
 
-    decision, _ = evaluate_checkpoint(ambiguous, clarify_rounds_used=3)
-    assert decision == GateDecision.ESCALATE
+    decision, _ = evaluate_checkpoint(ambiguous, clarify_rounds_used=MAX_CLARIFY_ROUNDS)
+    assert decision == GateDecision.FORCE_PASS
