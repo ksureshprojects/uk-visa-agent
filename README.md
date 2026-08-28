@@ -133,31 +133,7 @@ The advisory/assembly pipeline is identical across all three channels; what
 differs is how a user is identified and how a case is selected before that
 pipeline sees a message.
 
-### 5.1 Web-chat
-
-Web-chat has no identity-verification step — each session supplies its own
-user identifier directly — so it is the fastest way to exercise the
-advisory/assembly pipeline itself:
-
-1. Open `http://localhost:8000` and send an opening message describing the
-   applicant's situation, e.g. *"I'd like to visit London for two weeks,
-   tourism, staying in a hotel"* or *"I have a job offer from a UK company
-   sponsoring a Skilled Worker visa."*
-2. **Advisory phase.** The agent asks clarifying questions (batched up to
-   three at a time), grounded in retrieval over the knowledge base, until
-   it reaches a confident, cited determination of visa category — or, after
-   a bounded number of rounds, gives its best-effort determination with any
-   remaining uncertainty called out explicitly.
-3. **Assembly phase.** Once a visa category is determined, the agent walks
-   through that category's requirement schema — asking for the specific
-   fields and documents a submission needs, several at a time, validating
-   each deterministically as it's given (not by LLM judgment).
-4. **Completion.** Once every required field and document passes
-   validation, the agent presents a draft application package. This is
-   always a draft: nothing is auto-submitted, and the package is intended
-   for human review before filing.
-
-### 5.2 WhatsApp
+### 5.1 WhatsApp
 
 1. Send an opening message to the configured WhatsApp number.
 2. **Identity verification.** The agent asks for an email address, sends a
@@ -176,7 +152,7 @@ A returning user is recognized by their verified email address, not their
 phone number, so they can resume a case from a different device or channel
 once verified.
 
-### 5.3 Email
+### 5.2 Email
 
 1. Send an email to the configured mailbox with "UK" and "visa" both
    present somewhere in the subject or body (a filter against unrelated
